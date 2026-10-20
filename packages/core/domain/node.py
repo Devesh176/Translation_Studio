@@ -5,48 +5,22 @@ from pydantic import BaseModel, Field
 import uuid
 
 
-class PageProcessingMode(str, Enum):
-    DIGITAL_TEXT = "DIGITAL_TEXT"
-    SCANNED_IMAGE = "SCANNED_IMAGE"
-    MIXED = "MIXED"
-    DIGITAL_UNTRUSTED = "DIGITAL_UNTRUSTED"
-
-
 class NodeType(str, Enum):
     DOCUMENT = "DOCUMENT"
     PAGE = "PAGE"
-    TITLE = "TITLE"
-    SECTION_HEADING = "SECTION_HEADING"
-    SUBHEADING = "SUBHEADING"
-    HEADING = "HEADING"  # Backward compatibility alias
+    HEADER = "HEADER"
+    FOOTER = "FOOTER"
+    HEADING = "HEADING"
     PARAGRAPH = "PARAGRAPH"
-    BULLET_LIST = "BULLET_LIST"
-    NUMBERED_LIST = "NUMBERED_LIST"
     LIST_ITEM = "LIST_ITEM"
     TABLE = "TABLE"
     TABLE_ROW = "TABLE_ROW"
     TABLE_CELL = "TABLE_CELL"
     TABLE_CAPTION = "TABLE_CAPTION"
-    CAPTION = "CAPTION"
-    CODE_BLOCK = "CODE_BLOCK"
-    INLINE_CODE = "INLINE_CODE"
-    COMMAND = "COMMAND"
-    CONFIG_BLOCK = "CONFIG_BLOCK"
-    URL = "URL"
-    EMAIL = "EMAIL"
-    FILE_PATH = "FILE_PATH"
-    TECHNICAL_IDENTIFIER = "TECHNICAL_IDENTIFIER"
+    FIGURE = "FIGURE"
     EQUATION = "EQUATION"
     FOOTNOTE_REFERENCE = "FOOTNOTE_REFERENCE"
     FOOTNOTE = "FOOTNOTE"
-    HEADER = "HEADER"
-    FOOTER = "FOOTER"
-    PAGE_NUMBER = "PAGE_NUMBER"
-    FIGURE = "FIGURE"
-    IMAGE_REGION = "IMAGE_REGION"
-    SIGNATURE_REGION = "SIGNATURE_REGION"
-    STAMP_REGION = "STAMP_REGION"
-    UNKNOWN_REGION = "UNKNOWN_REGION"
 
 
 class TranslationStatus(str, Enum):
@@ -99,20 +73,6 @@ class TextSpan(BaseModel):
     is_italic: bool = False
 
 
-class NodeRelationships(BaseModel):
-    continues_from_block_id: Optional[str] = None
-    continues_to_block_id: Optional[str] = None
-    list_id: Optional[str] = None
-    table_id: Optional[str] = None
-    caption_for_block_id: Optional[str] = None
-
-
-class NodeProvenanceDetails(BaseModel):
-    native_extraction_refs: List[Dict[str, Any]] = Field(default_factory=list)
-    ocr_refs: List[Dict[str, Any]] = Field(default_factory=list)
-    reconciliation_status: str = "MATCHED"
-
-
 class DocumentNode(BaseModel):
     node_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     parent_id: Optional[str] = None
@@ -140,14 +100,6 @@ class DocumentNode(BaseModel):
     translation_status: TranslationStatus = TranslationStatus.PENDING
     validation_status: str = "PENDING"
     render_status: str = "PENDING"
-    
-    # Section 66 Provenance & Geometry
-    polygon: Optional[List[Tuple[float, float]]] = None
-    provenance: str = "native_pdf"  # native_pdf, ocr, reconciled, manual, inferred
-    relationships: NodeRelationships = Field(default_factory=NodeRelationships)
-    provenance_details: NodeProvenanceDetails = Field(default_factory=NodeProvenanceDetails)
-    protected_spans: List[Dict[str, Any]] = Field(default_factory=list)
-    ocr_confidence: Optional[float] = None
     
     # Metadata for provenance & prompt editing
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -188,9 +140,6 @@ class PageNode(BaseModel):
     height: float = 841.890  # A4 height in pt
     rotation: float = 0.0
     is_scanned: bool = False
-    processing_mode: PageProcessingMode = PageProcessingMode.DIGITAL_TEXT
-    mode_confidence: float = 1.0
-    mode_evidence: Dict[str, Any] = Field(default_factory=dict)
     ocr_confidence: Optional[float] = None
     nodes: List[DocumentNode] = Field(default_factory=list)
 
@@ -219,3 +168,4 @@ class DocumentIR(BaseModel):
         for page in self.pages:
             nodes.extend(page.nodes)
         return nodes
+

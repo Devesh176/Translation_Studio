@@ -98,16 +98,48 @@ def _find_latin_font_file() -> Optional[str]:
     return None
 
 
-from packages.rendering.script_segmenter import segment_script_runs
-
-
 def split_text_runs(text: str, primary_font: Optional[fitz.Font], fallback_font: Optional[fitz.Font]) -> List[Tuple[str, bool]]:
     """
-    Grapheme-safe script run segmentation conforming to Section 66.9.
-    Ensures combining marks, viramas, and matras remain bound to base characters,
-    preventing broken Indic shaping.
+    Splits text into contiguous runs of (substring, use_primary_font).
+    Ensures that mixed script tokens (e.g. English words inside a Hindi document)
+    are routed to a font that contains the glyph.
     """
-    return segment_script_runs(text, primary_font, fallback_font)
+    if not text:
+        return []
+    if not primary_font:
+        return [(text, False)]
+    if not fallback_font:
+        return [(text, True)]
+
+    runs: List[Tuple[str, bool]] = []
+    current_run: List[str] = []
+    current_use_primary: Optional[bool] = None
+
+    for char in text:
+        code = ord(char)
+        # Whitespace can belong to the active run
+        if char == " " and current_use_primary is not None:
+            current_run.append(char)
+            continue
+
+        # Check glyph coverage
+        has_primary = primary_font.has_glyph(code) > 0
+        use_primary = has_primary
+
+        if current_use_primary is None:
+            current_use_primary = use_primary
+            current_run.append(char)
+        elif use_primary == current_use_primary:
+            current_run.append(char)
+        else:
+            runs.append(("".join(current_run), current_use_primary))
+            current_run = [char]
+            current_use_primary = use_primary
+
+    if current_run:
+        runs.append(("".join(current_run), current_use_primary if current_use_primary is not None else True))
+
+    return runs
 
 
 class PDFRenderer:
