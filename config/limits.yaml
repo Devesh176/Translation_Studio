@@ -1,0 +1,27 @@
+limits:
+  max_file_size_mb: 50
+  max_pages: 100
+  max_translation_cost_usd: 1.00
+  max_llm_input_tokens: 100000
+  max_llm_output_tokens: 100000
+
+layout:
+  max_font_shrink_percent: 15
+  max_horizontal_expansion_percent: 10
+  max_vertical_expansion_percent: 20
+  line_height_multiplier: 1.25
+
+cost_estimation:
+  script_token_multipliers:
+    Latin: 1.0
+    Devanagari: 2.5
+    Tamil: 3.0
+    Telugu: 3.0
+    Kannada: 3.0
+    Malayalam: 3.0
+    Bengali: 2.8
+    Gujarati: 2.8
+    Gurmukhi: 2.8
+    Default: 2.5
+  cost_per_1k_input_tokens: 0.0007
+  cost_per_1k_output_tokens: 0.0009

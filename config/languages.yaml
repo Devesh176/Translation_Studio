@@ -1,0 +1,61 @@
+languages:
+  en:
+    name: English
+    script: Latin
+    bodhan_mt_code: en
+    bodhan_ocr_code: en
+    openrouter_name: English
+  hi:
+    name: Hindi
+    script: Devanagari
+    bodhan_mt_code: hi
+    bodhan_ocr_code: hi
+    openrouter_name: Hindi
+  ta:
+    name: Tamil
+    script: Tamil
+    bodhan_mt_code: ta
+    bodhan_ocr_code: ta
+    openrouter_name: Tamil
+  te:
+    name: Telugu
+    script: Telugu
+    bodhan_mt_code: te
+    bodhan_ocr_code: te
+    openrouter_name: Telugu
+  kn:
+    name: Kannada
+    script: Kannada
+    bodhan_mt_code: kn
+    bodhan_ocr_code: kn
+    openrouter_name: Kannada
+  ml:
+    name: Malayalam
+    script: Malayalam
+    bodhan_mt_code: ml
+    bodhan_ocr_code: ml
+    openrouter_name: Malayalam
+  bn:
+    name: Bengali
+    script: Bengali
+    bodhan_mt_code: bn
+    bodhan_ocr_code: bn
+    openrouter_name: Bengali
+  mr:
+    name: Marathi
+    script: Devanagari
+    bodhan_mt_code: mr
+    bodhan_ocr_code: mr
+    openrouter_name: Marathi
+  gu:
+    name: Gujarati
+    script: Gujarati
+    bodhan_mt_code: gu
+    bodhan_ocr_code: gu
+    openrouter_name: Gujarati
+  pa:
+    name: Punjabi
+    script: Gurmukhi
+    bodhan_mt_code: pa
+    bodhan_ocr_code: pa
+    openrouter_name: Punjabi

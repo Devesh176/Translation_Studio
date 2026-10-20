@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Translation Studio — Structure-Preserving Document AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- PDF.js for crisp client-side PDF rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app" class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-badge">
+          <i data-lucide="languages" class="logo-icon"></i>
+          <span class="logo-text">Translation<span class="logo-accent">Studio</span></span>
+          <span class="version-tag">V1.0</span>
+        </div>
+        <div class="header-divider"></div>
+        <div id="activeDocInfo" class="active-doc-pill hidden">
+          <i data-lucide="file-text" class="pill-icon"></i>
+          <span id="docFilename" class="doc-title">document.pdf</span>
+          <span id="docBadge" class="doc-badge">DIGITAL</span>
+          <span id="pageCountBadge" class="page-badge">1 Page</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="translation-controls">
+          <div class="select-group">
+            <label>Source</label>
+            <select id="sourceLangSelect" class="styled-select">
+              <option value="auto">Auto-Detect</option>
+              <option value="en" selected>English</option>
+              <option value="hi">Hindi (हिंदी)</option>
+              <option value="ta">Tamil (தமிழ்)</option>
+              <option value="te">Telugu (తెలుగు)</option>
+              <option value="kn">Kannada (ಕನ್ನಡ)</option>
+              <option value="ml">Malayalam (മലയാളം)</option>
+              <option value="bn">Bengali (বাংলা)</option>
+              <option value="mr">Marathi (मराठी)</option>
+              <option value="gu">Gujarati (ગુજરાતી)</option>
+              <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+            </select>
+          </div>
+
+          <div class="arrow-icon">
+            <i data-lucide="arrow-right"></i>
+          </div>
+
+          <div class="select-group">
+            <label>Target Language</label>
+            <select id="targetLangSelect" class="styled-select">
+              <option value="hi" selected>Hindi (हिंदी)</option>
+              <option value="ta">Tamil (தமிழ்)</option>
+              <option value="te">Telugu (తెలుగు)</option>
+              <option value="kn">Kannada (ಕನ್ನಡ)</option>
+              <option value="ml">Malayalam (മലയാളം)</option>
+              <option value="bn">Bengali (বাংলা)</option>
+              <option value="mr">Marathi (मराठी)</option>
+              <option value="gu">Gujarati (ગુજરાતી)</option>
+              <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+
+          <div class="select-group">
+            <label>Engine Router</label>
+            <select id="providerSelect" class="styled-select">
+              <option value="" selected>Auto (Bodhan Indic MT / OpenRouter)</option>
+              <option value="bodhan">Bodhan AI (Indic MT)</option>
+              <option value="openrouter">OpenRouter (Llama 3.3 70B)</option>
+            </select>
+          </div>
+
+          <button id="btnTranslate" class="btn btn-primary" disabled>
+            <i data-lucide="sparkles"></i>
+            <span>Translate Document</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <div class="status-indicator">
+          <span class="status-dot online"></span>
+          <span class="status-label">Backend Online</span>
+        </div>
+        <button id="btnOpenUpload" class="btn btn-secondary">
+          <i data-lucide="upload-cloud"></i>
+          <span>Upload PDF</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Upload Overlay Modal -->
+    <div id="uploadModal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title">
+            <i data-lucide="file-up" class="title-icon"></i>
+            <h3>Upload PDF Document</h3>
+          </div>
+          <button id="btnCloseModal" class="btn-icon">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        
+        <div class="modal-body">
+          <div id="dropzone" class="dropzone">
+            <input type="file" id="fileInput" accept=".pdf" class="file-input">
+            <div class="dropzone-content">
+              <div class="upload-icon-wrapper">
+                <i data-lucide="upload-cloud" class="upload-icon"></i>
+              </div>
+              <h4>Drag & drop your PDF here</h4>
+              <p>Supports Digital, Scanned & Multi-column PDFs up to 50MB</p>
+              <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
+                Browse Files
+              </button>
+            </div>
+          </div>
+
+          <div class="quick-samples">
+            <span class="sample-label">Or try a sample document:</span>
+            <div class="sample-chips">
+              <button type="button" class="chip" onclick="loadSampleDocument('financial')">
+                <i data-lucide="file-text"></i> Financial Report (English)
+              </button>
+              <button type="button" class="chip" onclick="loadSampleDocument('legal')">
+                <i data-lucide="file-text"></i> Legal Notice (English)
+              </button>
+              <button type="button" class="chip" onclick="loadSampleDocument('technical')">
+                <i data-lucide="file-text"></i> Technical Abstract (English)
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <main class="workspace-grid">
+      
+      <!-- Left Panel: Document Structure & Nodes Browser -->
+      <section class="panel panel-structure">
+        <div class="panel-header">
+          <div class="panel-title">
+            <i data-lucide="layout-list"></i>
+            <h3>Document IR Structure</h3>
+          </div>
+          <div class="panel-actions">
+            <span id="nodeCountBadge" class="counter-badge">0 Nodes</span>
+          </div>
+        </div>
+
+        <div id="structureEmptyState" class="empty-state">
+          <i data-lucide="layers" class="empty-icon"></i>
+          <p>No document loaded. Upload a PDF to extract structured Document IR nodes.</p>
+        </div>
+
+        <div id="nodesList" class="nodes-container hidden">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- Center Panel: Dual Live PDF Preview (Source vs Translated) -->
+      <section class="panel panel-preview">
+        <div class="panel-header preview-header">
+          <div class="preview-tabs">
+            <button id="tabTranslated" class="tab-btn active" onclick="switchPreviewTab('translated')">
+              <i data-lucide="file-check"></i>
+              <span>Translated PDF</span>
+              <span id="qaScoreBadge" class="qa-badge hidden">QA: 100%</span>
+            </button>
+            <button id="tabSource" class="tab-btn" onclick="switchPreviewTab('source')">
+              <i data-lucide="file"></i>
+              <span>Original Source</span>
+            </button>
+          </div>
+
+          <div class="preview-toolbar">
+            <div class="version-selector-group">
+              <label><i data-lucide="history"></i> Version:</label>
+              <select id="versionSelect" class="version-select" onchange="switchVersion(this.value)">
+                <option value="">v1.0 (Initial)</option>
+              </select>
+            </div>
+
+            <a id="btnDownloadPdf" class="btn btn-sm btn-accent disabled" target="_blank" download="translated.pdf">
+              <i data-lucide="download"></i>
+              <span>Download PDF</span>
+            </a>
+          </div>
+        </div>
+
+        <div class="preview-viewport">
+          <div id="previewLoading" class="preview-overlay hidden">
+            <div class="spinner"></div>
+            <p id="loadingMessage">Generating structure-preserving PDF...</p>
+          </div>
+
+          <div id="previewPlaceholder" class="empty-state">
+            <i data-lucide="file-search" class="empty-icon"></i>
+            <p>Upload and translate a document to preview the rendered PDF</p>
+          </div>
+
+          <div id="pdfViewerContainer" class="pdf-viewer-container hidden">
+            <iframe id="pdfFrame" class="pdf-frame" src=""></iframe>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Panel: AI Section Prompt-Editor Copilot -->
+      <section class="panel panel-copilot">
+        <div class="panel-header">
+          <div class="panel-title">
+            <i data-lucide="message-square-code"></i>
+            <h3>Section Prompt Editor</h3>
+          </div>
+          <span class="live-pill"><span class="pulse-dot"></span> Live Copilot</span>
+        </div>
+
+        <div id="copilotEmptyState" class="empty-state">
+          <i data-lucide="mouse-pointer-click" class="empty-icon"></i>
+          <h4>No Section Selected</h4>
+          <p>Click on any paragraph or heading in the Document Structure on the left to edit it with custom prompts.</p>
+        </div>
+
+        <div id="copilotActivePanel" class="copilot-workspace hidden">
+          <!-- Selected Node Context Card -->
+          <div class="node-context-card">
+            <div class="context-card-header">
+              <span id="selectedNodeType" class="node-type-badge">PARAGRAPH</span>
+              <span id="selectedNodeId" class="node-id-mono">node-id</span>
+            </div>
+            
+            <div class="context-field">
+              <label>Original Source Text</label>
+              <div id="selectedSourceText" class="text-display source"></div>
+            </div>
+
+            <div class="context-field">
+              <label>Current Translation</label>
+              <div id="selectedCurrentTranslation" class="text-display target"></div>
+            </div>
+          </div>
+
+          <!-- Prompt Instruction Box -->
+          <div class="copilot-input-box">
+            <label for="promptInput" class="input-label">
+              <i data-lucide="wand-2"></i> Prompt Instruction (Only this section re-renders)
+            </label>
+            <div class="quick-prompts">
+              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this section more formal and professional.')">Formal</button>
+              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this more concise while keeping all numbers.')">Concise</button>
+              <button class="quick-prompt-btn" onclick="setQuickPrompt('Simplify language for a general audience.')">Simple</button>
+            </div>
+            <textarea id="promptInput" class="prompt-textarea" rows="3" placeholder="e.g. 'Make this section more punchy and concise, preserving the financial percentages'"></textarea>
+            
+            <button id="btnApplyPromptEdit" class="btn btn-primary btn-block">
+              <i data-lucide="sparkles"></i>
+              <span>Refine Section & Re-render</span>
+            </button>
+          </div>
+
+          <!-- Edit History Stream -->
+          <div class="edit-history-section">
+            <h4><i data-lucide="git-commit"></i> Section Revision History</h4>
+            <div id="editHistoryList" class="history-list">
+              <div class="history-item empty">No previous edits on this node</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

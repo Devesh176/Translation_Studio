@@ -1,0 +1,22 @@
+policy_version: "routing-v1"
+
+routes:
+  - source: en
+    targets: [hi, ta, te, kn, ml, bn, mr, gu, pa]
+    provider: bodhan
+
+  - source: hi
+    targets: [en]
+    provider: bodhan
+
+  - source: ta
+    targets: [en]
+    provider: bodhan
+
+  - source: te
+    targets: [en]
+    provider: bodhan
+
+default:
+  provider: openrouter
+  model: "meta-llama/llama-3.3-70b-instruct"

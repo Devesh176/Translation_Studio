@@ -1,0 +1,42 @@
+fonts:
+  en:
+    primary: "NotoSans-Regular"
+    bold: "NotoSans-Bold"
+    italic: "NotoSans-Italic"
+    fallback: ["Helvetica", "Arial"]
+  hi:
+    primary: "NotoSansDevanagari-Regular"
+    bold: "NotoSansDevanagari-Bold"
+    fallback: ["NotoSans-Regular"]
+  ta:
+    primary: "NotoSansTamil-Regular"
+    bold: "NotoSansTamil-Bold"
+    fallback: ["NotoSans-Regular"]
+  te:
+    primary: "NotoSansTelugu-Regular"
+    bold: "NotoSansTelugu-Bold"
+    fallback: ["NotoSans-Regular"]
+  kn:
+    primary: "NotoSansKannada-Regular"
+    bold: "NotoSansKannada-Bold"
+    fallback: ["NotoSans-Regular"]
+  ml:
+    primary: "NotoSansMalayalam-Regular"
+    bold: "NotoSansMalayalam-Bold"
+    fallback: ["NotoSans-Regular"]
+  bn:
+    primary: "NotoSansBengali-Regular"
+    bold: "NotoSansBengali-Bold"
+    fallback: ["NotoSans-Regular"]
+  mr:
+    primary: "NotoSansDevanagari-Regular"
+    bold: "NotoSansDevanagari-Bold"
+    fallback: ["NotoSans-Regular"]
+  gu:
+    primary: "NotoSansGujarati-Regular"
+    bold: "NotoSansGujarati-Bold"
+    fallback: ["NotoSans-Regular"]
+  pa:
+    primary: "NotoSansGurmukhi-Regular"
+    bold: "NotoSansGurmukhi-Bold"
+    fallback: ["NotoSans-Regular"]

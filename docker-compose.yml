@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://translation:translation@postgres:5432/translation
+      - REDIS_URL=redis://redis:6379/0
+      - OBJECT_STORAGE_LOCAL_DIR=/app/data/storage
+    volumes:
+      - ./data:/app/data
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - ./config:/app/config
+      - ./fonts:/app/fonts
+      - ./tests:/app/tests
+      - ./.env:/app/.env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://translation:translation@postgres:5432/translation
+      - REDIS_URL=redis://redis:6379/0
+      - OBJECT_STORAGE_LOCAL_DIR=/app/data/storage
+    volumes:
+      - ./data:/app/data
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - ./config:/app/config
+      - ./fonts:/app/fonts
+      - ./tests:/app/tests
+      - ./.env:/app/.env
+
+
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=translation
+      - POSTGRES_PASSWORD=translation
+      - POSTGRES_DB=translation
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
