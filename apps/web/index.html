@@ -88,6 +88,11 @@
       </div>
 
       <div class="header-right">
+        <div id="costIndicator" class="cost-pill" title="Model cost so far for this document">
+          <i data-lucide="coins"></i>
+          <span id="costTotal">$0.0000</span>
+          <span id="costDetail" class="cost-detail"></span>
+        </div>
         <div class="status-indicator">
           <span class="status-dot online"></span>
           <span class="status-label">Backend Online</span>
@@ -148,28 +153,6 @@
     <!-- Main Workspace -->
     <main class="workspace-grid">
       
-      <!-- Left Panel: Document Structure & Nodes Browser -->
-      <section class="panel panel-structure">
-        <div class="panel-header">
-          <div class="panel-title">
-            <i data-lucide="layout-list"></i>
-            <h3>Document IR Structure</h3>
-          </div>
-          <div class="panel-actions">
-            <span id="nodeCountBadge" class="counter-badge">0 Nodes</span>
-          </div>
-        </div>
-
-        <div id="structureEmptyState" class="empty-state">
-          <i data-lucide="layers" class="empty-icon"></i>
-          <p>No document loaded. Upload a PDF to extract structured Document IR nodes.</p>
-        </div>
-
-        <div id="nodesList" class="nodes-container hidden">
-          <!-- Populated dynamically -->
-        </div>
-      </section>
-
       <!-- Center Panel: Dual Live PDF Preview (Source vs Translated) -->
       <section class="panel panel-preview">
         <div class="panel-header preview-header">
@@ -212,7 +195,17 @@
           </div>
 
           <div id="pdfViewerContainer" class="pdf-viewer-container hidden">
-            <iframe id="pdfFrame" class="pdf-frame" src=""></iframe>
+            <div class="selection-toolbar">
+              <button id="modeText" class="mode-btn active" title="Highlight text to edit it"><i data-lucide="text-cursor"></i> Highlight text</button>
+              <button id="modeBox" class="mode-btn" title="Drag a rectangle over the area to edit"><i data-lucide="square-dashed"></i> Draw box</button>
+              <div class="zoom-group">
+                <button id="zoomOut" class="mode-btn" title="Zoom out (Ctrl+scroll)"><i data-lucide="zoom-out"></i></button>
+                <button id="zoomLabel" class="mode-btn" title="Reset zoom">100%</button>
+                <button id="zoomIn" class="mode-btn" title="Zoom in"><i data-lucide="zoom-in"></i></button>
+              </div>
+              <span class="mode-hint" id="modeHint">Highlight text on the page, then describe the change.</span>
+            </div>
+            <div id="pdfPages" class="pdf-pages"></div>
           </div>
         </div>
       </section>
@@ -222,59 +215,56 @@
         <div class="panel-header">
           <div class="panel-title">
             <i data-lucide="message-square-code"></i>
-            <h3>Section Prompt Editor</h3>
+            <h3>Prompt Editor</h3>
           </div>
           <span class="live-pill"><span class="pulse-dot"></span> Live Copilot</span>
         </div>
 
         <div id="copilotEmptyState" class="empty-state">
           <i data-lucide="mouse-pointer-click" class="empty-icon"></i>
-          <h4>No Section Selected</h4>
-          <p>Click on any paragraph or heading in the Document Structure on the left to edit it with custom prompts.</p>
+          <h4>Nothing Selected</h4>
+          <p>Highlight text on the PDF, or switch to "Draw box" and drag a rectangle over the area you want to change. Then describe the edit.</p>
         </div>
 
         <div id="copilotActivePanel" class="copilot-workspace hidden">
-          <!-- Selected Node Context Card -->
           <div class="node-context-card">
             <div class="context-card-header">
-              <span id="selectedNodeType" class="node-type-badge">PARAGRAPH</span>
-              <span id="selectedNodeId" class="node-id-mono">node-id</span>
+              <span id="selectionKind" class="node-type-badge">TEXT</span>
+              <span id="selectionPage" class="node-id-mono">page 1</span>
+              <button id="btnClearSelection" class="btn-icon" title="Clear selection"><i data-lucide="x"></i></button>
             </div>
-            
             <div class="context-field">
-              <label>Original Source Text</label>
-              <div id="selectedSourceText" class="text-display source"></div>
-            </div>
-
-            <div class="context-field">
-              <label>Current Translation</label>
-              <div id="selectedCurrentTranslation" class="text-display target"></div>
+              <label>Selected</label>
+              <div id="selectionPreview" class="text-display target"></div>
             </div>
           </div>
 
-          <!-- Prompt Instruction Box -->
           <div class="copilot-input-box">
             <label for="promptInput" class="input-label">
-              <i data-lucide="wand-2"></i> Prompt Instruction (Only this section re-renders)
+              <i data-lucide="wand-2"></i> What should change?
             </label>
             <div class="quick-prompts">
-              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this section more formal and professional.')">Formal</button>
+              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this more formal and professional.')">Formal</button>
               <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this more concise while keeping all numbers.')">Concise</button>
-              <button class="quick-prompt-btn" onclick="setQuickPrompt('Simplify language for a general audience.')">Simple</button>
+              <button class="quick-prompt-btn" onclick="setQuickPrompt('Simplify the language for a general audience.')">Simple</button>
             </div>
-            <textarea id="promptInput" class="prompt-textarea" rows="3" placeholder="e.g. 'Make this section more punchy and concise, preserving the financial percentages'"></textarea>
-            
+            <textarea id="promptInput" class="prompt-textarea" rows="3" placeholder="e.g. 'Use a more formal tone'"></textarea>
             <button id="btnApplyPromptEdit" class="btn btn-primary btn-block">
               <i data-lucide="sparkles"></i>
-              <span>Refine Section & Re-render</span>
+              <span>Apply Edit</span>
             </button>
           </div>
 
-          <!-- Edit History Stream -->
+          <div id="editResult" class="edit-result hidden"></div>
+
           <div class="edit-history-section">
-            <h4><i data-lucide="git-commit"></i> Section Revision History</h4>
+            <h4><i data-lucide="git-commit"></i> Edits this session</h4>
             <div id="editHistoryList" class="history-list">
-              <div class="history-item empty">No previous edits on this node</div>
+              <div class="history-item empty">No edits yet</div>
+            </div>
+            <div class="undo-redo">
+              <button id="btnUndo" class="btn btn-secondary hidden"><i data-lucide="undo-2"></i><span>Undo</span></button>
+              <button id="btnRedo" class="btn btn-secondary hidden"><i data-lucide="redo-2"></i><span>Redo</span></button>
             </div>
           </div>
         </div>

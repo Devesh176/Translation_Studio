@@ -314,7 +314,7 @@ body {
 /* Workspace Layout */
 .workspace-grid {
   display: grid;
-  grid-template-columns: 320px 1fr 340px;
+  grid-template-columns: 1fr 340px;
   height: calc(100vh - 65px);
   overflow: hidden;
   background: var(--bg-primary);
@@ -937,3 +937,40 @@ body {
 .hidden {
   display: none !important;
 }
+
+/* Selection based prompt editing */
+.pdf-viewer-container { display: flex; flex-direction: column; }
+.selection-toolbar { display: flex; align-items: center; gap: .5rem; padding: .4rem .75rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); flex: none; }
+.mode-btn { display: inline-flex; align-items: center; gap: .35rem; padding: .3rem .7rem; font: inherit; font-size: .78rem; color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); cursor: pointer; }
+.mode-btn.active { color: #fff; border-color: var(--accent-primary); background: rgba(59,130,246,.25); }
+.mode-btn svg { width: 14px; height: 14px; }
+.mode-hint { font-size: .75rem; color: var(--text-muted); margin-left: auto; }
+.pdf-pages { flex: 1; overflow: auto; padding: 1rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; background: #1a1f2b; }
+.pdf-page { position: relative; background: #fff; box-shadow: var(--shadow-md); flex: none; }
+.pdf-page canvas { display: block; }
+.pdf-page .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; opacity: 1; }
+.pdf-page .textLayer span, .pdf-page .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.pdf-page .textLayer ::selection { background: rgba(59,130,246,.35); }
+.pdf-page .overlay { position: absolute; inset: 0; pointer-events: none; }
+.draw-mode .pdf-page .overlay { pointer-events: auto; cursor: crosshair; z-index: 5; }
+.sel-rect { position: absolute; border: 2px solid var(--accent-primary); background: rgba(59,130,246,.18); border-radius: 2px; pointer-events: none; }
+.sel-rect.text { border: none; background: rgba(245,158,11,.35); }
+.changed-flash { position: absolute; inset: 0; border: 3px solid var(--accent-success); pointer-events: none; animation: flash 2.5s ease-out forwards; }
+@keyframes flash { to { opacity: 0; } }
+.cost-pill { display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .65rem; font-size: .78rem; font-family: var(--font-mono); color: var(--text-primary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-full); cursor: default; }
+.cost-pill svg { width: 14px; height: 14px; color: var(--accent-warning); }
+.cost-detail { color: var(--text-muted); font-size: .7rem; }
+.edit-result { padding: .7rem .85rem; border-radius: var(--radius-md); font-size: .82rem; line-height: 1.45; border: 1px solid var(--border-color); }
+.edit-result.rejected { border-color: rgba(239,68,68,.5); background: rgba(239,68,68,.1); }
+.edit-result.ok { border-color: rgba(16,185,129,.5); background: rgba(16,185,129,.1); }
+.edit-result .res-title { font-weight: 700; margin-bottom: .25rem; }
+.edit-result .res-sug { margin-top: .35rem; color: var(--text-secondary); }
+.edit-result .res-diff { margin-top: .4rem; font-size: .75rem; color: var(--text-secondary); }
+.edit-result .res-diff del { color: #fca5a5; } .edit-result .res-diff ins { color: #86efac; text-decoration: none; }
+.edit-result .res-warn { margin-top: .35rem; color: var(--accent-warning); }
+
+.zoom-group { display: inline-flex; gap: .25rem; margin-left: .75rem; }
+.zoom-group .mode-btn { min-width: 2rem; justify-content: center; }
+
+.undo-redo { display: flex; gap: .5rem; margin-top: .6rem; }
+.undo-redo .btn { flex: 1; justify-content: center; }

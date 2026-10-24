@@ -8,6 +8,7 @@ from apps.api.dependencies import get_storage, get_pipeline
 from packages.storage.object_store.base import ObjectStore
 from apps.worker.tasks.pipeline import DocumentTranslationPipeline
 from packages.document.ir.serializer import IRSerializer
+from packages.costs.ledger import CostLedger
 
 router = APIRouter(prefix="/api/v1/documents", tags=["Documents"])
 
@@ -74,7 +75,13 @@ async def translate_document(
         "target_language": result["target_language"],
         "download_url": f"/api/v1/documents/{document_id}/versions/{result['version_id']}/pdf",
         "ir_url": f"/api/v1/documents/{document_id}/versions/{result['version_id']}/structure",
+        "cost_usd": result.get("cost_usd", 0.0),
     }
+
+
+@router.get("/{document_id}/costs")
+async def get_document_costs(document_id: str, storage: ObjectStore = Depends(get_storage)):
+    return await CostLedger(storage).summary(document_id)
 
 
 

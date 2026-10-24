@@ -101,6 +101,31 @@ class PromptManager:
         ]
 
     @classmethod
+    def get_feasibility_messages(
+        cls, selected_text: str, instruction: str, kind: str, types: str, tgt_lang: str
+    ) -> list[Dict[str, str]]:
+        sys_msg = cls._get_template("feasibility_v1", "system").format(target_language=tgt_lang)
+        usr_msg = cls._get_template("feasibility_v1", "user").format(
+            kind=kind, types=types, selected_text=selected_text, instruction=instruction
+        )
+        return [{"role": "system", "content": sys_msg}, {"role": "user", "content": usr_msg}]
+
+    @classmethod
+    def get_selection_edit_messages(
+        cls, items: str, context: str, instruction: str, src_lang: str, tgt_lang: str, multi: bool
+    ) -> list[Dict[str, str]]:
+        fmt = (
+            'Return ONLY a JSON object mapping each item id to its edited text, e.g. {"id": "text"}.'
+            if multi
+            else "Return ONLY the edited text of the single item, with no quotes, labels or commentary."
+        )
+        sys_msg = cls._get_template("selection_edit_v1", "system").format(target_language=tgt_lang, format_rule=fmt)
+        usr_msg = cls._get_template("selection_edit_v1", "user").format(
+            source_language=src_lang, context=context or "(none)", items=items, instruction=instruction
+        )
+        return [{"role": "system", "content": sys_msg}, {"role": "user", "content": usr_msg}]
+
+    @classmethod
     def get_semantic_eval_messages(
         cls,
         source_text: str,

@@ -18,6 +18,7 @@ from packages.providers.bodhan.translation import BodhanTranslationProvider
 from packages.providers.openrouter.translation import OpenRouterTranslationProvider
 from packages.providers.base import TranslationRequest
 from packages.translation.cost_guard import CostGuard
+from packages.costs.ledger import CostCollector, CostLedger, estimate_tokens
 from packages.translation.normalizer import TextNormalizer
 from packages.translation.protected_content import protect, validate_and_restore
 from packages.validation.invariants import InvariantValidator
@@ -53,7 +54,7 @@ class DocumentTranslationPipeline:
         user_requested_provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         tgt_lang = normalize_language_code(target_language)
-        
+        costs = CostCollector("translate")
         # 1. Parse PDF to Document IR
         ir: DocumentIR = self.parser.parse(pdf_bytes, document_id=document_id)
         src_lang = normalize_language_code(source_language or ir.source_language or "en")
@@ -158,6 +159,12 @@ class DocumentTranslationPipeline:
                             errors = [f"PROVIDER_ERROR:{type(exc).__name__}"]
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
+                        if result.estimated_cost_usd is not None:
+                            costs.add(result.provider, result.model, result.input_tokens or 0,
+                                      result.output_tokens or 0, cost_usd=result.estimated_cost_usd, purpose="translate")
+                        else:
+                            costs.add(result.provider, result.model, estimate_tokens(protected.masked),
+                                      estimate_tokens(result.translated_text), purpose="translate")
                         masked_out = TextNormalizer.normalize_indic_text(
                             TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
                         )
@@ -225,7 +232,10 @@ class DocumentTranslationPipeline:
         await self.storage.put_object(ir_path, ir_json.encode("utf-8"), "application/json")
         await self.storage.put_object(pdf_path, rendered_pdf_bytes, "application/pdf")
 
+        await CostLedger(self.storage).record(document_id, costs, version_id)
+
         return {
+            "cost_usd": costs.total,
             "document_id": document_id,
             "version_id": version_id,
             "source_language": src_lang,

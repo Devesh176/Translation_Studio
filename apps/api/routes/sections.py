@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from apps.api.schemas.document import SectionEditRequest, SectionEditResponse
+from apps.api.schemas.document import SectionEditRequest, SectionEditResponse, SelectionEditRequest, SelectionEditResponse
 from apps.api.dependencies import get_storage, get_section_edit_pipeline
 from apps.worker.tasks.section_edit import SectionEditPipeline
 
@@ -31,3 +31,23 @@ async def prompt_edit_section(
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{document_id}/edit", response_model=SelectionEditResponse)
+async def prompt_edit_selection(
+    document_id: str,
+    request: SelectionEditRequest,
+    pipeline: SectionEditPipeline = Depends(get_section_edit_pipeline),
+):
+    try:
+        res = await pipeline.edit_selection(
+            document_id=document_id,
+            current_version_id=request.version_id,
+            instruction=request.instruction,
+            selection=request.selection.model_dump(exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return SelectionEditResponse(**res)
