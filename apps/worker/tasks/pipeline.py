@@ -2,6 +2,7 @@ import asyncio
 import os
 import uuid
 import hashlib
+import re
 import fitz
 from typing import Optional, Dict, Any
 
@@ -18,6 +19,7 @@ from packages.providers.openrouter.translation import OpenRouterTranslationProvi
 from packages.providers.base import TranslationRequest
 from packages.translation.cost_guard import CostGuard
 from packages.translation.normalizer import TextNormalizer
+from packages.translation.protected_content import protect, validate_and_restore
 from packages.validation.invariants import InvariantValidator
 from packages.validation.visual import VisualQAValidator
 from packages.rendering.pdf_renderer import PDFRenderer
@@ -103,56 +105,96 @@ class DocumentTranslationPipeline:
                 if not node.source_text.strip():
                     continue
 
+                if node.type == NodeType.CODE_BLOCK or node.metadata.get("is_code") or node.metadata.get("math_only"):
+                    node.translated_text = node.source_text
+                    node.translation_status = TranslationStatus.SKIPPED
+                    node.validation_status = "PASS"
+                    continue
+
+                protected = protect(node.source_text)
+                node.metadata["protected_tokens"] = protected.mapping
+                if not re.search(r"[^\W\d_]", re.sub(r"\u27e6P\d+\u27e7", "", protected.masked)):
+                    # nothing translatable left (only protected tokens / numbers / symbols)
+                    node.translated_text = node.source_text
+                    node.translation_status = TranslationStatus.SKIPPED
+                    node.validation_status = "PASS"
+                    continue
+
                 routing = self.router.route(
                     source_language=src_lang,
                     target_language=tgt_lang,
                     user_requested_provider=user_requested_provider,
                 )
 
-                # Check cache
                 cache_key = TranslationCache.compute_cache_key(
-                    source_text=node.source_text,
+                    source_text=protected.masked,
                     source_language=src_lang,
                     target_language=tgt_lang,
                     provider=routing.provider,
                     model=routing.model or "native",
-                    prompt_version="v1",
+                    prompt_version="v2",
                 )
                 cached = await self.cache.get(cache_key)
 
-                if cached:
-                    node.translated_text = cached
-                    node.translation_status = TranslationStatus.TRANSLATED
-                else:
+                masked_out = cached
+                if masked_out is not None and validate_and_restore(masked_out, protected.mapping)[1]:
+                    masked_out = None  # stale/poisoned cache entry: retranslate
+                failed_errors: list = []
+                if masked_out is None:
                     req = TranslationRequest(
                         node_id=node.node_id,
-                        source_text=node.source_text,
+                        source_text=protected.masked,
                         source_language=src_lang,
                         target_language=tgt_lang,
                         node_type=node.type,
                         spans=node.spans,
                     )
-
-                    if routing.provider == "bodhan":
+                    errors: list = []
+                    attempts = ["bodhan"] * 4 + ["openrouter"] if routing.provider == "bodhan" else ["openrouter"] * 2
+                    for attempt, prov in enumerate(attempts):
                         try:
-                            result = await self.bodhan_provider.translate(req)
-                        except Exception:
-                            # Primary provider failed; graceful fallback to OpenRouter
-                            result = await self.openrouter_provider.translate(req)
-                    else:
-                        result = await self.openrouter_provider.translate(req)
+                            result = await (self.bodhan_provider if prov == "bodhan" else self.openrouter_provider).translate(req)
+                        except Exception as exc:
+                            errors = [f"PROVIDER_ERROR:{type(exc).__name__}"]
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                            continue
+                        masked_out = TextNormalizer.normalize_indic_text(
+                            TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
+                        )
+                        _, errors = validate_and_restore(masked_out, protected.mapping)
+                        if not errors and src_lang != tgt_lang and masked_out.strip() == protected.masked.strip():
+                            errors = ["UNTRANSLATED_ECHO"]
+                        if not errors:
+                            break
+                        await asyncio.sleep(0.3)
+                    if errors:
+                        failed_errors = errors
+                        if masked_out is None:
+                            masked_out = protected.masked
+                    if not errors:
+                        await self.cache.set(cache_key, masked_out)
 
-                    clean_text = TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
-                    clean_text = TextNormalizer.normalize_indic_text(clean_text)
-                    
-                    node.translated_text = clean_text
-                    node.translation_status = TranslationStatus.TRANSLATED
-                    
-                    await self.cache.set(cache_key, clean_text)
+                restored, perrors = validate_and_restore(masked_out, protected.mapping)
+                if perrors:
+                    # Never ship broken tokens: fall back to the source text for this node
+                    node.metadata["protected_errors"] = perrors
+                    node.metadata["raw_output"] = masked_out
+                    node.translated_text = node.source_text
+                    node.translation_status = TranslationStatus.FAILED
+                    node.validation_status = "FAIL_PROTECTED_TOKENS"
+                    continue
+                node.translated_text = restored
+                if failed_errors:
+                    node.metadata["translation_errors"] = failed_errors
+                    node.translation_status = TranslationStatus.FAILED
+                    node.validation_status = "FAIL_UNTRANSLATED"
+                    continue
+                node.translation_status = TranslationStatus.TRANSLATED
 
-                # 4. Invariant Validation (Numbers, URLs, Emails, Non-empty)
-                if not node.translated_text or not node.translated_text.strip():
+                if not node.translated_text.strip():
                     node.validation_status = "FAIL_EMPTY"
+                elif TextNormalizer.has_sentinel(node.translated_text):
+                    node.validation_status = "FAIL_SENTINEL_LEAK"
                 else:
                     valid_num, _ = InvariantValidator.validate_numbers(node.source_text, node.translated_text)
                     valid_urls, _ = InvariantValidator.validate_urls_and_emails(node.source_text, node.translated_text)
@@ -190,6 +232,7 @@ class DocumentTranslationPipeline:
             "target_language": tgt_lang,
             "status": "COMPLETED",
             "qa_score": qa_score,
+            "qa_errors": qa_errors,
             "ir_storage_path": ir_path,
             "pdf_storage_path": pdf_path,
             "pdf_bytes": rendered_pdf_bytes,

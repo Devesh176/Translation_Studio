@@ -57,53 +57,63 @@ class VisualQAValidator:
         if rendered_pages < total_ir_pages:
             errors.append(f"Rendered PDF page count ({rendered_pages}) is less than IR ({total_ir_pages}).")
 
-        # 2. Check for unexpected blank pages and missing glyphs
-        total_expected_chars = 0
-        total_rendered_chars = 0
-        expected_indic_chars = 0
-        rendered_indic_chars = 0
+        # 2. Per-page checks: blank pages, leaks, protected tokens, missing nodes
+        from packages.translation.normalizer import TextNormalizer
+        from packages.translation.protected_content import has_placeholder
 
+        def _squash(t: str) -> str:
+            return "".join(t.split())
+
+        total_nodes = 0
+        missing_nodes = 0
+        critical: List[str] = []
         for page_idx, page_node in enumerate(ir.pages):
-            expected_text = " ".join([n.translated_text or n.source_text for n in page_node.nodes if (n.translated_text or n.source_text).strip()])
-            if not expected_text:
+            expected_nodes = [n for n in page_node.nodes if (n.translated_text or n.source_text).strip()]
+            if not expected_nodes:
                 continue
+            if page_idx >= rendered_pages:
+                continue
+            rendered_text = doc[page_idx].get_text()
+            rendered_sq = _squash(rendered_text)
+            if sum(len(_squash(n.translated_text or n.source_text)) for n in expected_nodes) > 20 and not rendered_sq:
+                critical.append(f"Page {page_idx + 1} is unexpectedly blank in rendered PDF.")
 
-            page_expected_chars = len(expected_text.replace(" ", ""))
-            total_expected_chars += page_expected_chars
+            if TextNormalizer.has_sentinel(rendered_text):
+                critical.append(f"SENTINEL_LEAK: prompt delimiter text found on page {page_idx + 1}.")
+            if has_placeholder(rendered_text):
+                critical.append(f"PLACEHOLDER_LEAK: protected-token marker found on page {page_idx + 1}.")
 
-            # Count expected non-Latin / Indic characters
-            for ch in expected_text:
-                if ord(ch) > 255:
-                    expected_indic_chars += 1
-
-            if page_idx < rendered_pages:
-                rendered_page_text = doc[page_idx].get_text().strip()
-                page_rendered_chars = len(rendered_page_text.replace(" ", ""))
-                total_rendered_chars += page_rendered_chars
-
-                for ch in rendered_page_text:
-                    if ord(ch) > 255:
-                        rendered_indic_chars += 1
-
-                # Check blank page
-                if page_expected_chars > 20 and page_rendered_chars == 0:
-                    errors.append(f"Page {page_idx + 1} is unexpectedly blank in rendered PDF.")
+            for n in expected_nodes:
+                total_nodes += 1
+                from packages.document.parser.pymupdf_parser import strip_math
+                text = strip_math(n.translated_text or n.source_text)
+                if n.metadata.get("math_only"):
+                    total_nodes -= 1
+                    continue
+                if n.validation_status.startswith("FAIL"):
+                    critical.append(f"NODE_FAILED:{n.node_id}:{n.validation_status}")
+                if n.render_status == "OVERFLOW":
+                    critical.append(f"NODE_OVERFLOW:{n.node_id}")
+                # Missing-node check: first and last 12 non-space characters must be extractable
+                # Indic conjuncts are not reliably extractable, so only ASCII content is probed
+                sq = "".join(c for c in _squash(text) if c.isascii() and c.isalnum())
+                rendered_ascii = "".join(c for c in rendered_sq if c.isascii() and c.isalnum())
+                probe = [sq[:10], sq[-10:]] if len(sq) > 10 else ([sq] if sq else [])
+                if not all(p in rendered_ascii for p in probe):
+                    missing_nodes += 1
+                    errors.append(f"MISSING_NODE:{n.node_id}")
+                # Protected tokens must appear verbatim in the rendered page
+                for original in (strip_math(v) for v in (n.metadata.get("protected_tokens") or {}).values()):
+                    orig_ascii = "".join(c for c in _squash(original) if c.isascii() and c.isalnum())
+                    if orig_ascii and original.strip() and orig_ascii not in rendered_ascii:
+                        errors.append(f"PROTECTED_TOKEN_NOT_RENDERED:{n.node_id}:{original!r}")
+                        break
 
         doc.close()
-
-        # 3. Missing glyph detection
-        glyph_score = 1.0
-        if expected_indic_chars > 0:
-            glyph_retention = rendered_indic_chars / max(1, expected_indic_chars)
-            if glyph_retention < 0.60:
-                errors.append(
-                    f"MISSING_GLYPHS: Rendered PDF retained only {glyph_retention * 100:.1f}% "
-                    f"of Indic glyphs ({rendered_indic_chars}/{expected_indic_chars}). "
-                    "Font rendering failed to output target script characters."
-                )
-                glyph_score = max(0.0, glyph_retention)
-            else:
-                glyph_score = min(1.0, glyph_retention)
+        errors.extend(critical)
+        glyph_score = 1.0 - (missing_nodes / max(1, total_nodes))
+        if critical:
+            glyph_score = min(glyph_score, 0.5)
 
         # Composite QA Score
         final_qa_score = round(min(boundary_score, glyph_score), 2)

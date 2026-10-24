@@ -48,8 +48,8 @@ class OpenRouterTranslationProvider(TranslationProvider):
 
         content = response["choices"][0]["message"]["content"].strip()
         # Strip any accidental wrapping fences the LLM added
-        if content.startswith("<<<") and content.endswith(">>>"):
-            content = content[3:-3].strip()
+        from packages.translation.normalizer import TextNormalizer
+        content = TextNormalizer.strip_sentinels(content)
 
         usage = response.get("usage", {})
         inp_tokens = usage.get("prompt_tokens", 0)

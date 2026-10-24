@@ -13,6 +13,7 @@ class NodeType(str, Enum):
     HEADING = "HEADING"
     PARAGRAPH = "PARAGRAPH"
     LIST_ITEM = "LIST_ITEM"
+    CODE_BLOCK = "CODE_BLOCK"
     TABLE = "TABLE"
     TABLE_ROW = "TABLE_ROW"
     TABLE_CELL = "TABLE_CELL"

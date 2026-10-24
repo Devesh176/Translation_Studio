@@ -1,19 +1,34 @@
 import re
 import unicodedata
 
+_SENTINEL_RE = re.compile(
+    r"<<<\s*DOCUMENT_CONTENT|DOCUMENT_CONTENT\s*>>>|</?source_segment>|<<<|>>>",
+    re.IGNORECASE,
+)
+
 
 class TextNormalizer:
     @staticmethod
     def normalize_indic_text(text: str) -> str:
         if not text:
             return ""
-        # Unicode NFC normalization
         normalized = unicodedata.normalize("NFC", text)
-        # Clean extra repeated whitespaces
-        normalized = re.sub(r"[ \t]+", " ", normalized)
-        # Clean zero-width non-joiner abuse
-        normalized = normalized.replace("\u200c\u200c", "\u200c")
-        return normalized.strip()
+        # Collapse spaces/tabs but keep newlines and leading indentation of each line
+        lines = []
+        for line in normalized.split("\n"):
+            indent = re.match(r"[ \t]*", line).group(0)
+            lines.append(indent + re.sub(r"[ \t]+", " ", line[len(indent):]).rstrip())
+        normalized = "\n".join(lines)
+        normalized = normalized.replace("‌‌", "‌")
+        return normalized.strip("\n").strip()
+
+    @staticmethod
+    def strip_sentinels(text: str) -> str:
+        return _SENTINEL_RE.sub("", text).strip()
+
+    @staticmethod
+    def has_sentinel(text: str) -> bool:
+        return bool(text and _SENTINEL_RE.search(text))
 
     @staticmethod
     def clean_llm_markdown_wrappers(text: str) -> str:
@@ -22,6 +37,4 @@ class TextNormalizer:
             lines = t.split("\n")
             if len(lines) >= 2:
                 t = "\n".join(lines[1:-1]).strip()
-        if t.startswith("<<<") and t.endswith(">>>"):
-            t = t[3:-3].strip()
-        return t
+        return TextNormalizer.strip_sentinels(t)

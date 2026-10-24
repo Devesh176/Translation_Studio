@@ -1,4 +1,6 @@
 import hashlib
+import itertools
+import re
 import uuid
 import fitz  # PyMuPDF
 from typing import List, Optional
@@ -14,13 +16,300 @@ from packages.core.domain.node import (
     TableNode,
     FootnoteNode,
 )
+from packages.translation.protected_content import is_code_line, is_yaml_line
 from packages.core.exceptions import InvalidPDFError
 from packages.routing.language import detect_unicode_script, infer_language_from_script
+
+
+_BULLET_CHARS = {"\u2022", "\u25cf", "\u25aa", "\u25e6", "\u2023", "\uf0b7", "\uf0a7", "-", "\u2013", "*"}
+_NUM_MARKER_RE = re.compile(r"^(\d+[.)]|[a-zA-Z][.)]|\([\da-zA-Z]+\))$")
+_NUM_PREFIX_RE = re.compile(r"^(\d+[.)]|[a-zA-Z][.)])\s+")
+
+
+MATH_OPEN, MATH_CLOSE = "\ue000", "\ue001"
+MATH_RE = re.compile(MATH_OPEN + r"(\d+)" + MATH_CLOSE)
+_MATH_FONT_RE = re.compile(r"^(?:[A-Z]{6}\+)?(?:cmmi|cmsy|cmex|msbm|msam|cmmib|cmbsy|lmmath|stix|cambriamath|cmr[5-9]$|cmbx[5-9]$)", re.I)
+_CONNECTOR = set("()[]{}=+-\u2212\u2013\u00d7\u00b7,./|<>:;")
+
+
+def _is_math_font(font: str) -> bool:
+    return bool(_MATH_FONT_RE.match(font or ""))
+
+
+def _is_connector(sp: dict) -> bool:
+    t = sp["text"].strip()
+    return len(t) <= 3 and all(ch in _CONNECTOR or ch.isdigit() for ch in t)
+
+
+def strip_math(text: str) -> str:
+    return MATH_RE.sub("", text)
+
+
+def _fold_math(body: List[dict], counter) -> tuple:
+    """Replace runs of math-font spans (plus short connectors between them) with marker tokens."""
+    n = len(body)
+    ism = [_is_math_font(sp.get("font", "")) for sp in body]
+    solid = [ism[i] and body[i]["text"].strip() != "" for i in range(n)]
+    parts, regions, i = [], [], 0
+    while i < n:
+        if not solid[i]:
+            parts.append(body[i]["text"])
+            i += 1
+            continue
+        j = i
+        k = i + 1
+        while k < n:
+            if ism[k]:
+                if solid[k]:
+                    j = k
+                k += 1
+            elif _is_connector(body[k]) and k + 1 < n and any(solid[m] for m in range(k + 1, min(n, k + 3))):
+                k += 1
+            else:
+                break
+        members = body[i:j + 1]
+        lead = len(members[0]["text"]) - len(members[0]["text"].lstrip())
+        trail = len(members[-1]["text"]) - len(members[-1]["text"].rstrip())
+        mb = [sp["bbox"] for sp in members if sp["text"].strip()]
+        rid = next(counter)
+        big = max(members, key=lambda sp: sp["size"])
+        regions.append({"id": rid, "bbox": [min(b[0] for b in mb), min(b[1] for b in mb),
+                                            max(b[2] for b in mb), max(b[3] for b in mb)],
+                        "baseline": big["origin"][1], "size": big["size"]})
+        parts.append(" " * min(lead, 1) + MATH_OPEN + str(rid) + MATH_CLOSE + " " * min(trail, 1))
+        i = j + 1
+    return "".join(parts), regions
+
+
+def _rgb(color_int: int):
+    return (((color_int >> 16) & 255) / 255.0, ((color_int >> 8) & 255) / 255.0, (color_int & 255) / 255.0)
+
+
+_FUNC_WORDS = {"Var", "Cov", "rank", "Col", "Row", "dim", "det", "tr", "diag", "exp", "log", "Pr", "Null"}
+
+
+def _is_display_math(node: DocumentNode) -> bool:
+    if node.type not in (NodeType.PARAGRAPH, NodeType.LIST_ITEM):
+        return False
+    t = strip_math(node.source_text)
+    words = [w for w in re.findall(r"[^\W\d_]{2,}", t) if w not in _FUNC_WORDS]
+    if words:
+        return False
+    return bool(node.metadata.get("math_regions")) or bool(re.search(r"[\u0370-\u03ff=\d]", t))
+
+
+def merge_display_math(nodes: List[DocumentNode], page_node: PageNode) -> List[DocumentNode]:
+    out: List[DocumentNode] = []
+    run: List[DocumentNode] = []
+
+    def flush():
+        if not run:
+            return
+        regions = [r for n in run for r in n.metadata.get("math_regions", [])]
+        b = [n.bbox for n in run]
+        first = run[0]
+        text = " ".join(n.source_text for n in run)
+        md = {"math_block": True, "math_only": True, "line_count": len(run), "math_regions": regions}
+        out.append(first.model_copy(update={
+            "type": NodeType.PARAGRAPH, "source_text": text,
+            "source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "bbox": BoundingBox(x0=min(x.x0 for x in b), y0=min(x.y0 for x in b),
+                                x1=max(x.x1 for x in b), y1=max(x.y1 for x in b)),
+            "metadata": md}))
+        run.clear()
+
+    for n in nodes:
+        if _is_display_math(n):
+            if run and n.bbox.y0 - max(x.bbox.y1 for x in run) > 2.0 * max(6.0, n.style.font_size):
+                flush()
+            run.append(n)
+        else:
+            flush()
+            out.append(n)
+    flush()
+    for i, n in enumerate(out):
+        n.reading_order = i
+        n.node_id = f"{page_node.page_id}_n{i}"
+    return out
 
 
 class PyMuPDFParser:
     def __init__(self):
         pass
+
+    @staticmethod
+    def _extract_lines(page, counter=None) -> List[dict]:
+        """One entry per visual line: raw text (with indentation), body spans, optional list marker."""
+        out: List[dict] = []
+        pending = None
+        counter = counter or itertools.count(1)
+        for bi, block in enumerate(page.get_text("dict").get("blocks", [])):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                raw_spans = [sp for sp in line.get("spans", []) if sp.get("text", "") != ""]
+                if not "".join(sp["text"] for sp in raw_spans).strip():
+                    continue
+                marker = None
+                marker_bbox = None
+                body = list(raw_spans)
+                first = body[0]
+                ftxt = first["text"].strip()
+                if len(body) > 1 and (ftxt in _BULLET_CHARS or "symbol" in first.get("font", "").lower()
+                                      or _NUM_MARKER_RE.match(ftxt)) and len(ftxt) <= 4:
+                    marker, marker_bbox = ftxt, first["bbox"]
+                    body = body[1:]
+                raw = "".join(sp["text"] for sp in body)
+                if marker is not None and not raw.strip():
+                    pending = (marker, marker_bbox)
+                    continue
+                if marker is None and pending is not None:
+                    marker, marker_bbox = pending
+                    pending = None
+                if marker is None and body:
+                    m = _NUM_PREFIX_RE.match(raw.strip())
+                    if m and len(body) >= 1 and not _is_math_font(body[0].get("font", "")) and body[0]["text"].strip().startswith(m.group(1)) and len(raw.strip()) > len(m.group(0)):
+                        marker = m.group(1)
+                        mb = body[0]["bbox"]
+                        marker_bbox = mb
+                        raw = raw.strip()[len(m.group(0)):]
+                        body = [dict(body[0], text=raw, bbox=(mb[0] + 0.0, mb[1], mb[2], mb[3]))] + body[1:]
+                bx = [sp["bbox"] for sp in body]
+                if not bx:
+                    continue
+                folded, regions = _fold_math(body, counter)
+                if regions:
+                    raw = folded
+                out.append({
+                    "block": bi,
+                    "raw": raw,
+                    "spans": body,
+                    "marker": marker,
+                    "marker_bbox": marker_bbox,
+                    "math": regions,
+                    "bbox": (min(b[0] for b in bx), min(b[1] for b in bx), max(b[2] for b in bx), max(b[3] for b in bx)),
+                    "size": max(sp["size"] for sp in ([x for x in body if not _is_math_font(x.get("font", ""))] or body)),
+                    "indent": len(raw) - len(raw.lstrip(" ")),
+                })
+        out.sort(key=lambda l: (round(l["bbox"][1], 0), l["bbox"][0]))
+        return out
+
+    @staticmethod
+    def _is_mono(line) -> bool:
+        return any("mono" in sp.get("font", "").lower() or "consol" in sp.get("font", "").lower()
+                   or "courier" in sp.get("font", "").lower() for sp in line["spans"])
+
+    def _group_lines(self, lines: List[dict], rect) -> List[dict]:
+        groups: List[dict] = []
+        prev_code = False
+        for ln in lines:
+            text = ln["raw"].rstrip()
+            is_code = False
+            if ln["marker"] is None and self._is_mono(ln):
+                if ln["indent"] >= 4 or is_code_line(text):
+                    is_code = True
+                elif is_yaml_line(text):
+                    is_code = True
+            prev_code = is_code
+            cur = groups[-1] if groups else None
+            if is_code:
+                if cur and cur["kind"] == "code" and ln["bbox"][1] - cur["lines"][-1]["bbox"][3] < ln["size"] * 1.2:
+                    cur["lines"].append(ln)
+                else:
+                    groups.append({"kind": "code", "lines": [ln]})
+                continue
+            joinable = (
+                cur and cur["kind"] == "text" and ln["marker"] is None and cur["lines"][-1]["block"] == ln["block"]
+                and abs(cur["lines"][-1]["size"] - ln["size"]) < 0.5
+                and ln["size"] < 12.5
+                and ln["bbox"][1] - cur["lines"][-1]["bbox"][3] < ln["size"] * 0.8
+                and cur["lines"][-1]["bbox"][2] >= cur["bbox_x1"] - ln["size"] * 2.5
+                and not cur["lines"][-1]["raw"].rstrip().endswith(":")
+            )
+            if joinable:
+                cur["lines"].append(ln)
+                cur["bbox_x1"] = max(cur["bbox_x1"], ln["bbox"][2])
+            else:
+                groups.append({"kind": "text", "lines": [ln], "bbox_x1": ln["bbox"][2]})
+        return groups
+
+    def _make_node(self, g: dict, page_node: PageNode, order: int) -> Optional[DocumentNode]:
+        lines = g["lines"]
+        x0 = min(l["bbox"][0] for l in lines)
+        y0 = min(l["bbox"][1] for l in lines)
+        x1 = max(l["bbox"][2] for l in lines)
+        y1 = max(l["bbox"][3] for l in lines)
+        if g["kind"] == "code":
+            text = "\n".join(l["raw"].rstrip() for l in lines)
+        else:
+            text = " ".join(l["raw"].strip() for l in lines).strip()
+            text = re.sub(r" {2,}", " ", text)
+        if not text.strip():
+            return None
+
+        spans: List[TextSpan] = []
+        for l in lines:
+            for sp in l["spans"]:
+                if not sp["text"].strip():
+                    continue
+                font = sp.get("font", "")
+                flags = sp.get("flags", 0)
+                bold = bool(flags & 16 or "bold" in font.lower())
+                italic = bool(flags & 2 or "italic" in font.lower() or "oblique" in font.lower())
+                style = NodeStyle(font_family=font, font_size=sp["size"], font_weight="bold" if bold else "normal",
+                                  is_italic=italic, color_rgb=_rgb(sp.get("color", 0)))
+                bb = sp["bbox"]
+                spans.append(TextSpan(text=sp["text"], bbox=BoundingBox(x0=bb[0], y0=bb[1], x1=bb[2], y1=bb[3]),
+                                      style=style, is_bold=bold, is_italic=italic))
+        if not spans:
+            return None
+        main = max(spans, key=lambda s: len(s.text))
+        size = max(s.style.font_size for s in spans)
+        all_bold = all(s.is_bold for s in spans)
+        first_line = lines[0]
+
+        if g["kind"] == "code":
+            ntype = NodeType.CODE_BLOCK
+        elif first_line["marker"] is not None:
+            ntype = NodeType.LIST_ITEM
+        elif size >= 12.5 or (all_bold and len(text) < 120 and not text.endswith(".")):
+            ntype = NodeType.HEADING
+        elif y0 < 50.0:
+            ntype = NodeType.HEADER
+        elif y1 > page_node.height - 50.0:
+            ntype = NodeType.FOOTNOTE if text[:2].strip().isdigit() and len(text) > 10 else NodeType.FOOTER
+        else:
+            ntype = NodeType.PARAGRAPH
+
+        math = [r for l in lines for r in l.get("math", [])]
+        md = {"line_count": len(lines), "line_height": (y1 - y0) / max(1, len(lines))}
+        if first_line["marker"] is not None:
+            md["marker"] = first_line["marker"]
+            md["marker_bbox"] = list(first_line["marker_bbox"])
+        if math:
+            md["math_regions"] = math
+            if not re.search(r"[^\W\d_]", strip_math(text)):
+                md["math_only"] = True
+        if g["kind"] == "code":
+            md["is_code"] = True
+            md["indent"] = first_line["indent"]
+
+        return DocumentNode(
+            node_id=f"{page_node.page_id}_n{order}",
+            parent_id=page_node.page_id,
+            page_id=page_node.page_id,
+            page_number=page_node.page_number,
+            type=ntype,
+            bbox=BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1),
+            reading_order=order,
+            style=NodeStyle(font_family=main.style.font_family, font_size=size,
+                            font_weight="bold" if all_bold else "normal", is_italic=main.is_italic,
+                            color_rgb=main.style.color_rgb, line_height=(y1 - y0) / max(1, len(lines))),
+            source_text=text,
+            source_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            spans=spans,
+            metadata=md,
+        )
 
     def parse(self, pdf_bytes: bytes, document_id: Optional[str] = None) -> DocumentIR:
         doc_id = document_id or str(uuid.uuid4())
@@ -44,121 +333,18 @@ class PyMuPDFParser:
                 rotation=page.rotation,
             )
 
-            # Extract structured text blocks with span detail
-            page_dict = page.get_text("dict")
+            lines = self._extract_lines(page)
+            groups = self._group_lines(lines, rect)
             reading_order = 0
-
-            # Sort blocks primarily by y0, then x0 for multi-column heuristic
-            blocks = page_dict.get("blocks", [])
-            # Filter text blocks (type 0)
-            text_blocks = [b for b in blocks if b.get("type") == 0]
-            # Multi-column sort: if page has distinct column split
-            text_blocks.sort(key=lambda b: (round(b["bbox"][1] / 20) * 20, b["bbox"][0]))
-
-            for block in text_blocks:
-                bbox_raw = block.get("bbox", [0, 0, 0, 0])
-                bbox = BoundingBox(
-                    x0=bbox_raw[0],
-                    y0=bbox_raw[1],
-                    x1=bbox_raw[2],
-                    y1=bbox_raw[3],
-                )
-
-                spans_list: List[TextSpan] = []
-                full_block_text_parts = []
-                max_font_size = 11.0
-                is_bold_block = False
-
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        span_text = span.get("text", "")
-                        if not span_text.strip():
-                            continue
-                        full_block_text_parts.append(span_text)
-                        
-                        f_size = span.get("size", 11.0)
-                        if f_size > max_font_size:
-                            max_font_size = f_size
-                        
-                        flags = span.get("flags", 0)
-                        # PyMuPDF flags: 2 is bold, 1 is italic
-                        is_bold = bool(flags & 2 or "bold" in span.get("font", "").lower())
-                        is_italic = bool(flags & 1 or "italic" in span.get("font", "").lower())
-                        if is_bold:
-                            is_bold_block = True
-
-                        s_bbox_raw = span.get("bbox", [0, 0, 0, 0])
-                        s_bbox = BoundingBox(
-                            x0=s_bbox_raw[0],
-                            y0=s_bbox_raw[1],
-                            x1=s_bbox_raw[2],
-                            y1=s_bbox_raw[3],
-                        )
-
-                        color_int = span.get("color", 0)
-                        r = ((color_int >> 16) & 255) / 255.0
-                        g = ((color_int >> 8) & 255) / 255.0
-                        b = (color_int & 255) / 255.0
-
-                        span_style = NodeStyle(
-                            font_family=span.get("font", "NotoSans-Regular"),
-                            font_size=f_size,
-                            font_weight="bold" if is_bold else "normal",
-                            is_italic=is_italic,
-                            color_rgb=(r, g, b),
-                        )
-
-                        spans_list.append(
-                            TextSpan(
-                                text=span_text,
-                                bbox=s_bbox,
-                                style=span_style,
-                                is_bold=is_bold,
-                                is_italic=is_italic,
-                            )
-                        )
-
-                block_text = " ".join(full_block_text_parts).strip()
-                if not block_text:
+            for g in groups:
+                node = self._make_node(g, page_node, reading_order)
+                if node is None:
                     continue
-
-                all_text_accum.append(block_text)
-
-                # Classify node type
-                node_type = NodeType.PARAGRAPH
-                if max_font_size >= 14.0 or (is_bold_block and len(block_text) < 120 and not block_text.endswith(".")):
-                    node_type = NodeType.HEADING
-                elif bbox.y0 < 50.0:
-                    node_type = NodeType.HEADER
-                elif bbox.y1 > (rect.height - 50.0):
-                    # Check if footnote or footer
-                    if block_text[0:2].strip().isdigit() and len(block_text) > 10:
-                        node_type = NodeType.FOOTNOTE
-                    else:
-                        node_type = NodeType.FOOTER
-
-                source_hash = hashlib.sha256(block_text.encode("utf-8")).hexdigest()
-                node_style = NodeStyle(
-                    font_size=max_font_size,
-                    font_weight="bold" if is_bold_block else "normal",
-                )
-
-                doc_node = DocumentNode(
-                    node_id=f"{page_node.page_id}_n{reading_order}",
-                    parent_id=page_node.page_id,
-                    page_id=page_node.page_id,
-                    page_number=page_num,
-                    type=node_type,
-                    bbox=bbox,
-                    reading_order=reading_order,
-                    style=node_style,
-                    source_text=block_text,
-                    source_hash=source_hash,
-                    spans=spans_list,
-                )
-                page_node.nodes.append(doc_node)
+                all_text_accum.append(node.source_text)
+                page_node.nodes.append(node)
                 reading_order += 1
 
+            page_node.nodes = merge_display_math(page_node.nodes, page_node)
             pages.append(page_node)
 
         doc.close()
