@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 import hashlib
 import re
@@ -27,6 +28,39 @@ from packages.rendering.pdf_renderer import PDFRenderer
 from packages.storage.object_store.local_store import LocalFileObjectStore
 from packages.storage.redis.cache import TranslationCache
 
+# Observability
+from packages.observability.logging import get_logger
+from packages.observability.tracing import get_tracer
+from packages.observability.metrics import (
+    ACTIVE_JOBS,
+    DOCUMENTS_PROCESSED_TOTAL,
+    FONT_MISSING_GLYPH_TOTAL,
+    LAYOUT_OVERFLOW_TOTAL,
+    OCR_LATENCY_SECONDS,
+    OCR_PAGES_TOTAL,
+    OCR_PROVIDER_FAILURES_TOTAL,
+    PIPELINE_DURATION_SECONDS,
+    RENDER_FAILURES_TOTAL,
+    RENDER_LATENCY_SECONDS,
+    RENDER_PAGES_TOTAL,
+    ROUTING_DECISIONS_TOTAL,
+    TRANSLATION_CACHE_HITS_TOTAL,
+    TRANSLATION_CACHE_MISSES_TOTAL,
+    TRANSLATION_COST_USD_TOTAL,
+    TRANSLATION_INPUT_TOKENS_TOTAL,
+    TRANSLATION_LATENCY_SECONDS,
+    TRANSLATION_OUTPUT_TOKENS_TOTAL,
+    TRANSLATION_PROVIDER_FAILURES_TOTAL,
+    TRANSLATION_REQUESTS_TOTAL,
+    TRANSLATION_RETRIES_TOTAL,
+    VALIDATION_FAILURES_TOTAL,
+    VISUAL_QA_FAILURES_TOTAL,
+    VISUAL_QA_SCORE_HISTOGRAM,
+)
+
+logger = get_logger(__name__)
+tracer = get_tracer(__name__)
+
 
 class DocumentTranslationPipeline:
     def __init__(
@@ -53,186 +87,223 @@ class DocumentTranslationPipeline:
         source_language: Optional[str] = None,
         user_requested_provider: Optional[str] = None,
     ) -> Dict[str, Any]:
+        pipeline_start = time.perf_counter()
+        ACTIVE_JOBS.inc()
+
+        with tracer.start_as_current_span("document_translation_pipeline") as root_span:
+            root_span.set_attribute("document.id", document_id)
+            root_span.set_attribute("target_language", target_language)
+            if source_language:
+                root_span.set_attribute("source_language", source_language)
+
+            logger.info(
+                "pipeline_started",
+                document_id=document_id,
+                target_language=target_language,
+                source_language=source_language,
+            )
+
+            try:
+                result = await self._run(
+                    document_id=document_id,
+                    pdf_bytes=pdf_bytes,
+                    target_language=target_language,
+                    source_language=source_language,
+                    user_requested_provider=user_requested_provider,
+                    root_span=root_span,
+                )
+
+                duration = time.perf_counter() - pipeline_start
+                DOCUMENTS_PROCESSED_TOTAL.labels(status="COMPLETED").inc()
+                PIPELINE_DURATION_SECONDS.labels(status="COMPLETED").observe(duration)
+
+                logger.info(
+                    "pipeline_completed",
+                    document_id=document_id,
+                    version_id=result.get("version_id"),
+                    source_language=result.get("source_language"),
+                    target_language=result.get("target_language"),
+                    qa_score=result.get("qa_score"),
+                    cost_usd=result.get("cost_usd"),
+                    duration_ms=round(duration * 1000, 1),
+                )
+                return result
+
+            except Exception as exc:
+                duration = time.perf_counter() - pipeline_start
+                DOCUMENTS_PROCESSED_TOTAL.labels(status="FAILED").inc()
+                PIPELINE_DURATION_SECONDS.labels(status="FAILED").observe(duration)
+                logger.error(
+                    "pipeline_failed",
+                    document_id=document_id,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    duration_ms=round(duration * 1000, 1),
+                )
+                root_span.set_attribute("error", True)
+                root_span.set_attribute("error.message", str(exc))
+                raise
+            finally:
+                ACTIVE_JOBS.dec()
+
+    async def _run(
+        self,
+        document_id: str,
+        pdf_bytes: bytes,
+        target_language: str,
+        source_language: Optional[str],
+        user_requested_provider: Optional[str],
+        root_span: Any,
+    ) -> Dict[str, Any]:
         tgt_lang = normalize_language_code(target_language)
         costs = CostCollector("translate")
-        # 1. Parse PDF to Document IR
-        ir: DocumentIR = self.parser.parse(pdf_bytes, document_id=document_id)
+
+        # ------------------------------------------------------------------
+        # 1. Parse PDF → Document IR
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("parse_pdf") as span:
+            span.set_attribute("document.id", document_id)
+            logger.info("parsing_pdf", document_id=document_id, pdf_size_bytes=len(pdf_bytes))
+            ir: DocumentIR = self.parser.parse(pdf_bytes, document_id=document_id)
+            span.set_attribute("page_count", ir.total_pages)
+            span.set_attribute("classification", ir.classification)
+
         src_lang = normalize_language_code(source_language or ir.source_language or "en")
         ir.source_language = src_lang
         ir.target_language = tgt_lang
+        root_span.set_attribute("source_language", src_lang)
 
-        # 1b. Fallback to OCR for any scanned/image pages with no text blocks
-        if any(len(p.nodes) == 0 for p in ir.pages):
-            try:
-                pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                for page_idx, page in enumerate(ir.pages):
-                    if len(page.nodes) == 0 and page_idx < len(pdf_doc):
-                        pix = pdf_doc[page_idx].get_pixmap()
-                        img_bytes = pix.tobytes("png")
-                        ocr_res = await self.ocr_provider.extract_page(
-                            img_bytes,
-                            page_number=page.page_number,
-                            document_id=document_id,
-                            language_hint=src_lang,
-                        )
-                        for r_idx, b in enumerate(ocr_res.blocks):
-                            if not b.text.strip():
-                                continue
-                            node = DocumentNode(
-                                node_id=f"{page.page_id}_ocr_n{r_idx}",
-                                parent_id=page.page_id,
-                                page_id=page.page_id,
-                                page_number=page.page_number,
-                                type=NodeType.PARAGRAPH,
-                                bbox=b.bbox,
-                                reading_order=r_idx,
-                                style=NodeStyle(font_size=11.0),
-                                source_text=b.text,
-                                source_hash=hashlib.sha256(b.text.encode("utf-8")).hexdigest(),
-                            )
-                            page.nodes.append(node)
-                pdf_doc.close()
-            except Exception:
-                pass
-
-
-        # 2. Cost Guarding Check
-        total_text = " ".join([n.source_text for n in ir.get_all_nodes()])
-        self.cost_guard.check_and_estimate_cost(total_text, tgt_lang)
-
-        # 3. Route & Translate Nodes
-        for page in ir.pages:
-            for node in page.nodes:
-                if not node.source_text.strip():
-                    continue
-
-                if node.type == NodeType.CODE_BLOCK or node.metadata.get("is_code") or node.metadata.get("math_only"):
-                    node.translated_text = node.source_text
-                    node.translation_status = TranslationStatus.SKIPPED
-                    node.validation_status = "PASS"
-                    continue
-
-                protected = protect(node.source_text)
-                node.metadata["protected_tokens"] = protected.mapping
-                if not re.search(r"[^\W\d_]", re.sub(r"\u27e6P\d+\u27e7", "", protected.masked)):
-                    # nothing translatable left (only protected tokens / numbers / symbols)
-                    node.translated_text = node.source_text
-                    node.translation_status = TranslationStatus.SKIPPED
-                    node.validation_status = "PASS"
-                    continue
-
-                routing = self.router.route(
-                    source_language=src_lang,
-                    target_language=tgt_lang,
-                    user_requested_provider=user_requested_provider,
-                )
-
-                cache_key = TranslationCache.compute_cache_key(
-                    source_text=protected.masked,
-                    source_language=src_lang,
-                    target_language=tgt_lang,
-                    provider=routing.provider,
-                    model=routing.model or "native",
-                    prompt_version="v2",
-                )
-                cached = await self.cache.get(cache_key)
-
-                masked_out = cached
-                if masked_out is not None and validate_and_restore(masked_out, protected.mapping)[1]:
-                    masked_out = None  # stale/poisoned cache entry: retranslate
-                failed_errors: list = []
-                if masked_out is None:
-                    req = TranslationRequest(
-                        node_id=node.node_id,
-                        source_text=protected.masked,
-                        source_language=src_lang,
-                        target_language=tgt_lang,
-                        node_type=node.type,
-                        spans=node.spans,
-                    )
-                    errors: list = []
-                    attempts = ["bodhan"] * 4 + ["openrouter"] if routing.provider == "bodhan" else ["openrouter"] * 2
-                    for attempt, prov in enumerate(attempts):
-                        try:
-                            result = await (self.bodhan_provider if prov == "bodhan" else self.openrouter_provider).translate(req)
-                        except Exception as exc:
-                            errors = [f"PROVIDER_ERROR:{type(exc).__name__}"]
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                        if result.estimated_cost_usd is not None:
-                            costs.add(result.provider, result.model, result.input_tokens or 0,
-                                      result.output_tokens or 0, cost_usd=result.estimated_cost_usd, purpose="translate")
-                        else:
-                            costs.add(result.provider, result.model, estimate_tokens(protected.masked),
-                                      estimate_tokens(result.translated_text), purpose="translate")
-                        masked_out = TextNormalizer.normalize_indic_text(
-                            TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
-                        )
-                        _, errors = validate_and_restore(masked_out, protected.mapping)
-                        if not errors and src_lang != tgt_lang and masked_out.strip() == protected.masked.strip():
-                            errors = ["UNTRANSLATED_ECHO"]
-                        if not errors:
-                            break
-                        await asyncio.sleep(0.3)
-                    if errors:
-                        failed_errors = errors
-                        if masked_out is None:
-                            masked_out = protected.masked
-                    if not errors:
-                        await self.cache.set(cache_key, masked_out)
-
-                restored, perrors = validate_and_restore(masked_out, protected.mapping)
-                if perrors:
-                    # Never ship broken tokens: fall back to the source text for this node
-                    node.metadata["protected_errors"] = perrors
-                    node.metadata["raw_output"] = masked_out
-                    node.translated_text = node.source_text
-                    node.translation_status = TranslationStatus.FAILED
-                    node.validation_status = "FAIL_PROTECTED_TOKENS"
-                    continue
-                node.translated_text = restored
-                if failed_errors:
-                    node.metadata["translation_errors"] = failed_errors
-                    node.translation_status = TranslationStatus.FAILED
-                    node.validation_status = "FAIL_UNTRANSLATED"
-                    continue
-                node.translation_status = TranslationStatus.TRANSLATED
-
-                if not node.translated_text.strip():
-                    node.validation_status = "FAIL_EMPTY"
-                elif TextNormalizer.has_sentinel(node.translated_text):
-                    node.validation_status = "FAIL_SENTINEL_LEAK"
-                else:
-                    valid_num, _ = InvariantValidator.validate_numbers(node.source_text, node.translated_text)
-                    valid_urls, _ = InvariantValidator.validate_urls_and_emails(node.source_text, node.translated_text)
-                    if valid_num and valid_urls:
-                        node.validation_status = "PASS"
-                    elif not valid_num:
-                        node.validation_status = "WARN_NUM_MISMATCH"
-                    else:
-                        node.validation_status = "WARN_URL_MISMATCH"
-
-        # 5. Render translated PDF
-        is_overlay = ir.classification in ["SCANNED", "MIXED"]
-        rendered_pdf_bytes = self.renderer.render_ir_to_pdf(
-            ir, original_pdf_bytes=pdf_bytes, is_overlay_mode=is_overlay
+        logger.info(
+            "pdf_parsed",
+            document_id=document_id,
+            pages=ir.total_pages,
+            classification=ir.classification,
+            source_language=src_lang,
         )
 
-        # 6. Visual QA & Rendered Output Verification
-        is_render_valid, qa_errors, qa_score = VisualQAValidator.inspect_rendered_pdf(rendered_pdf_bytes, ir)
+        # ------------------------------------------------------------------
+        # 1b. OCR fallback for scanned/image pages
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("ocr_fallback") as span:
+            empty_pages = [p for p in ir.pages if len(p.nodes) == 0]
+            span.set_attribute("empty_page_count", len(empty_pages))
 
+            if empty_pages:
+                await self._run_ocr_on_empty_pages(
+                    ir=ir,
+                    pdf_bytes=pdf_bytes,
+                    document_id=document_id,
+                    src_lang=src_lang,
+                )
 
+        # ------------------------------------------------------------------
+        # 2. Cost guard
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("cost_guard"):
+            total_text = " ".join([n.source_text for n in ir.get_all_nodes()])
+            self.cost_guard.check_and_estimate_cost(total_text, tgt_lang)
+
+        # ------------------------------------------------------------------
+        # 3. Route & Translate nodes
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("translate_document") as span:
+            all_nodes = ir.get_all_nodes()
+            translatable = [n for n in all_nodes if n.source_text.strip()]
+            span.set_attribute("translatable_node_count", len(translatable))
+
+            logger.info(
+                "translation_started",
+                document_id=document_id,
+                src_lang=src_lang,
+                tgt_lang=tgt_lang,
+                node_count=len(translatable),
+            )
+
+            for page in ir.pages:
+                for node in page.nodes:
+                    await self._translate_node(
+                        node=node,
+                        document_id=document_id,
+                        src_lang=src_lang,
+                        tgt_lang=tgt_lang,
+                        user_requested_provider=user_requested_provider,
+                        costs=costs,
+                    )
+
+        # ------------------------------------------------------------------
+        # 5. Render translated PDF
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("render_pdf") as span:
+            is_overlay = ir.classification in ["SCANNED", "MIXED"]
+            span.set_attribute("is_overlay_mode", is_overlay)
+            span.set_attribute("page_count", ir.total_pages)
+
+            render_start = time.perf_counter()
+            logger.info("rendering_started", document_id=document_id, overlay_mode=is_overlay)
+
+            try:
+                rendered_pdf_bytes = self.renderer.render_ir_to_pdf(
+                    ir, original_pdf_bytes=pdf_bytes, is_overlay_mode=is_overlay
+                )
+                render_duration = time.perf_counter() - render_start
+                RENDER_LATENCY_SECONDS.observe(render_duration)
+                RENDER_PAGES_TOTAL.labels(status="success").inc(ir.total_pages)
+                logger.info(
+                    "rendering_completed",
+                    document_id=document_id,
+                    output_size_bytes=len(rendered_pdf_bytes),
+                    duration_ms=round(render_duration * 1000, 1),
+                )
+            except Exception as exc:
+                RENDER_FAILURES_TOTAL.labels(failure_code="RENDER_ERROR").inc()
+                logger.error("rendering_failed", document_id=document_id, error=str(exc))
+                raise
+
+        # ------------------------------------------------------------------
+        # 6. Visual QA
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("visual_qa") as span:
+            logger.info("visual_qa_started", document_id=document_id)
+            is_render_valid, qa_errors, qa_score = VisualQAValidator.inspect_rendered_pdf(
+                rendered_pdf_bytes, ir
+            )
+            VISUAL_QA_SCORE_HISTOGRAM.observe(qa_score)
+            span.set_attribute("qa_score", qa_score)
+            span.set_attribute("qa_valid", is_render_valid)
+
+            for err in qa_errors:
+                VISUAL_QA_FAILURES_TOTAL.labels(failure_code=err).inc()
+
+            log_fn = logger.info if is_render_valid else logger.warning
+            log_fn(
+                "visual_qa_completed",
+                document_id=document_id,
+                qa_score=qa_score,
+                qa_valid=is_render_valid,
+                qa_errors=qa_errors,
+            )
+
+        # ------------------------------------------------------------------
         # 7. Store artifacts
-        version_id = str(uuid.uuid4())
-        ir_json = IRSerializer.to_json(ir)
-        
-        ir_path = f"documents/{document_id}/versions/{version_id}/document.ir.json"
-        pdf_path = f"documents/{document_id}/versions/{version_id}/output.pdf"
+        # ------------------------------------------------------------------
+        with tracer.start_as_current_span("store_artifacts"):
+            version_id = str(uuid.uuid4())
+            ir_json = IRSerializer.to_json(ir)
 
-        await self.storage.put_object(ir_path, ir_json.encode("utf-8"), "application/json")
-        await self.storage.put_object(pdf_path, rendered_pdf_bytes, "application/pdf")
+            ir_path = f"documents/{document_id}/versions/{version_id}/document.ir.json"
+            pdf_path = f"documents/{document_id}/versions/{version_id}/output.pdf"
 
-        await CostLedger(self.storage).record(document_id, costs, version_id)
+            await self.storage.put_object(ir_path, ir_json.encode("utf-8"), "application/json")
+            await self.storage.put_object(pdf_path, rendered_pdf_bytes, "application/pdf")
+            await CostLedger(self.storage).record(document_id, costs, version_id)
+
+            logger.info(
+                "artifacts_stored",
+                document_id=document_id,
+                version_id=version_id,
+                ir_path=ir_path,
+                pdf_path=pdf_path,
+            )
 
         return {
             "cost_usd": costs.total,
@@ -249,3 +320,294 @@ class DocumentTranslationPipeline:
             "ir": ir,
         }
 
+    # -----------------------------------------------------------------------
+    # OCR helper
+    # -----------------------------------------------------------------------
+
+    async def _run_ocr_on_empty_pages(
+        self,
+        ir: DocumentIR,
+        pdf_bytes: bytes,
+        document_id: str,
+        src_lang: str,
+    ) -> None:
+        """Run Bodhan OCR on pages that have no native text nodes."""
+        try:
+            pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            for page_idx, page in enumerate(ir.pages):
+                if len(page.nodes) > 0 or page_idx >= len(pdf_doc):
+                    continue
+
+                with tracer.start_as_current_span("ocr_page") as span:
+                    span.set_attribute("page_number", page.page_number)
+                    span.set_attribute("document.id", document_id)
+                    ocr_start = time.perf_counter()
+
+                    try:
+                        pix = pdf_doc[page_idx].get_pixmap()
+                        img_bytes = pix.tobytes("png")
+                        ocr_res = await self.ocr_provider.extract_page(
+                            img_bytes,
+                            page_number=page.page_number,
+                            document_id=document_id,
+                            language_hint=src_lang,
+                        )
+                        ocr_duration = time.perf_counter() - ocr_start
+                        OCR_LATENCY_SECONDS.labels(provider="bodhan").observe(ocr_duration)
+                        OCR_PAGES_TOTAL.labels(provider="bodhan", status="success").inc()
+
+                        if ocr_res.confidence is not None:
+                            from packages.observability.metrics import OCR_CONFIDENCE_HISTOGRAM
+                            OCR_CONFIDENCE_HISTOGRAM.labels(provider="bodhan").observe(ocr_res.confidence)
+
+                        logger.info(
+                            "ocr_page_completed",
+                            document_id=document_id,
+                            page_number=page.page_number,
+                            block_count=len(ocr_res.blocks),
+                            confidence=ocr_res.confidence,
+                            duration_ms=round(ocr_duration * 1000, 1),
+                        )
+
+                        for r_idx, b in enumerate(ocr_res.blocks):
+                            if not b.text.strip():
+                                continue
+                            node = DocumentNode(
+                                node_id=f"{page.page_id}_ocr_n{r_idx}",
+                                parent_id=page.page_id,
+                                page_id=page.page_id,
+                                page_number=page.page_number,
+                                type=NodeType.PARAGRAPH,
+                                bbox=b.bbox,
+                                reading_order=r_idx,
+                                style=NodeStyle(font_size=11.0),
+                                source_text=b.text,
+                                source_hash=hashlib.sha256(b.text.encode("utf-8")).hexdigest(),
+                            )
+                            page.nodes.append(node)
+
+                    except Exception as exc:
+                        OCR_PAGES_TOTAL.labels(provider="bodhan", status="error").inc()
+                        OCR_PROVIDER_FAILURES_TOTAL.labels(
+                            provider="bodhan", failure_code=type(exc).__name__
+                        ).inc()
+                        logger.error(
+                            "ocr_page_failed",
+                            document_id=document_id,
+                            page_number=page.page_number,
+                            error=str(exc),
+                        )
+
+            pdf_doc.close()
+        except Exception as exc:
+            logger.error("ocr_fallback_failed", document_id=document_id, error=str(exc))
+
+    # -----------------------------------------------------------------------
+    # Translation helper
+    # -----------------------------------------------------------------------
+
+    async def _translate_node(
+        self,
+        node: DocumentNode,
+        document_id: str,
+        src_lang: str,
+        tgt_lang: str,
+        user_requested_provider: Optional[str],
+        costs: CostCollector,
+    ) -> None:
+        """Translate a single DocumentNode in-place, recording all metrics."""
+
+        if not node.source_text.strip():
+            return
+
+        # Skip non-translatable node types
+        if node.type == NodeType.CODE_BLOCK or node.metadata.get("is_code") or node.metadata.get("math_only"):
+            node.translated_text = node.source_text
+            node.translation_status = TranslationStatus.SKIPPED
+            node.validation_status = "PASS"
+            return
+
+        protected = protect(node.source_text)
+        node.metadata["protected_tokens"] = protected.mapping
+
+        # If nothing translatable remains after protecting tokens, skip
+        if not re.search(r"[^\W\d_]", re.sub(r"\u27e6P\d+\u27e7", "", protected.masked)):
+            node.translated_text = node.source_text
+            node.translation_status = TranslationStatus.SKIPPED
+            node.validation_status = "PASS"
+            return
+
+        routing = self.router.route(
+            source_language=src_lang,
+            target_language=tgt_lang,
+            user_requested_provider=user_requested_provider,
+        )
+        ROUTING_DECISIONS_TOTAL.labels(
+            provider=routing.provider,
+            reason=getattr(routing, "reason", "policy"),
+        ).inc()
+
+        # Cache lookup
+        cache_key = TranslationCache.compute_cache_key(
+            source_text=protected.masked,
+            source_language=src_lang,
+            target_language=tgt_lang,
+            provider=routing.provider,
+            model=routing.model or "native",
+            prompt_version="v2",
+        )
+        cached = await self.cache.get(cache_key)
+
+        masked_out = cached
+        if masked_out is not None and validate_and_restore(masked_out, protected.mapping)[1]:
+            masked_out = None  # stale/poisoned cache entry
+
+        if masked_out is not None:
+            TRANSLATION_CACHE_HITS_TOTAL.inc()
+        else:
+            TRANSLATION_CACHE_MISSES_TOTAL.inc()
+
+        # Translation attempts with retry
+        failed_errors: list = []
+        if masked_out is None:
+            req = TranslationRequest(
+                node_id=node.node_id,
+                source_text=protected.masked,
+                source_language=src_lang,
+                target_language=tgt_lang,
+                node_type=node.type,
+                spans=node.spans,
+            )
+            errors: list = []
+            attempts = (
+                ["bodhan"] * 4 + ["openrouter"]
+                if routing.provider == "bodhan"
+                else ["openrouter"] * 2
+            )
+
+            for attempt, prov in enumerate(attempts):
+                if attempt > 0:
+                    TRANSLATION_RETRIES_TOTAL.labels(provider=prov).inc()
+
+                t_start = time.perf_counter()
+                try:
+                    provider_obj = (
+                        self.bodhan_provider if prov == "bodhan" else self.openrouter_provider
+                    )
+                    result = await provider_obj.translate(req)
+                    t_dur = time.perf_counter() - t_start
+                    TRANSLATION_LATENCY_SECONDS.labels(provider=prov).observe(t_dur)
+
+                except Exception as exc:
+                    t_dur = time.perf_counter() - t_start
+                    TRANSLATION_PROVIDER_FAILURES_TOTAL.labels(
+                        provider=prov, failure_code=type(exc).__name__
+                    ).inc()
+                    logger.warning(
+                        "translation_attempt_failed",
+                        document_id=document_id,
+                        node_id=node.node_id,
+                        provider=prov,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    errors = [f"PROVIDER_ERROR:{type(exc).__name__}"]
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+
+                # Record cost / token metrics
+                if result.estimated_cost_usd is not None:
+                    costs.add(
+                        result.provider, result.model,
+                        result.input_tokens or 0,
+                        result.output_tokens or 0,
+                        cost_usd=result.estimated_cost_usd,
+                        purpose="translate",
+                    )
+                    TRANSLATION_COST_USD_TOTAL.labels(provider=prov).inc(result.estimated_cost_usd)
+                else:
+                    in_tok = estimate_tokens(protected.masked)
+                    out_tok = estimate_tokens(result.translated_text)
+                    costs.add(result.provider, result.model, in_tok, out_tok, purpose="translate")
+
+                if result.input_tokens:
+                    TRANSLATION_INPUT_TOKENS_TOTAL.labels(provider=prov).inc(result.input_tokens)
+                if result.output_tokens:
+                    TRANSLATION_OUTPUT_TOKENS_TOTAL.labels(provider=prov).inc(result.output_tokens)
+
+                masked_out = TextNormalizer.normalize_indic_text(
+                    TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
+                )
+                _, errors = validate_and_restore(masked_out, protected.mapping)
+                if not errors and src_lang != tgt_lang and masked_out.strip() == protected.masked.strip():
+                    errors = ["UNTRANSLATED_ECHO"]
+
+                if not errors:
+                    TRANSLATION_REQUESTS_TOTAL.labels(
+                        provider=prov,
+                        source_language=src_lang,
+                        target_language=tgt_lang,
+                        status="success",
+                    ).inc()
+                    break
+
+                await asyncio.sleep(0.3)
+
+            if errors:
+                TRANSLATION_REQUESTS_TOTAL.labels(
+                    provider=routing.provider,
+                    source_language=src_lang,
+                    target_language=tgt_lang,
+                    status="failed",
+                ).inc()
+                failed_errors = errors
+                if masked_out is None:
+                    masked_out = protected.masked
+            else:
+                await self.cache.set(cache_key, masked_out)
+
+        # Restore protected tokens
+        restored, perrors = validate_and_restore(masked_out, protected.mapping)
+        if perrors:
+            node.metadata["protected_errors"] = perrors
+            node.metadata["raw_output"] = masked_out
+            node.translated_text = node.source_text
+            node.translation_status = TranslationStatus.FAILED
+            node.validation_status = "FAIL_PROTECTED_TOKENS"
+            VALIDATION_FAILURES_TOTAL.labels(check_type="protected_tokens").inc()
+            logger.warning(
+                "protected_token_restore_failed",
+                document_id=document_id,
+                node_id=node.node_id,
+                errors=perrors,
+            )
+            return
+
+        node.translated_text = restored
+
+        if failed_errors:
+            node.metadata["translation_errors"] = failed_errors
+            node.translation_status = TranslationStatus.FAILED
+            node.validation_status = "FAIL_UNTRANSLATED"
+            return
+
+        node.translation_status = TranslationStatus.TRANSLATED
+
+        # Invariant validation
+        if not node.translated_text.strip():
+            node.validation_status = "FAIL_EMPTY"
+            VALIDATION_FAILURES_TOTAL.labels(check_type="empty_translation").inc()
+        elif TextNormalizer.has_sentinel(node.translated_text):
+            node.validation_status = "FAIL_SENTINEL_LEAK"
+            VALIDATION_FAILURES_TOTAL.labels(check_type="sentinel_leak").inc()
+        else:
+            valid_num, _ = InvariantValidator.validate_numbers(node.source_text, node.translated_text)
+            valid_urls, _ = InvariantValidator.validate_urls_and_emails(node.source_text, node.translated_text)
+            if valid_num and valid_urls:
+                node.validation_status = "PASS"
+            elif not valid_num:
+                node.validation_status = "WARN_NUM_MISMATCH"
+                VALIDATION_FAILURES_TOTAL.labels(check_type="number_mismatch").inc()
+            else:
+                node.validation_status = "WARN_URL_MISMATCH"
+                VALIDATION_FAILURES_TOTAL.labels(check_type="url_mismatch").inc()

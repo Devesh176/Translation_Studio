@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning
+# Points Grafana at the /var/lib/grafana/dashboards directory
+# which is populated from the config/grafana/dashboards/ host volume.
+
+apiVersion: 1
+
+providers:
+  - name: translation-studio
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

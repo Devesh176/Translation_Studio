@@ -1,0 +1,65 @@
+# Promtail configuration
+# Collects JSON logs from Docker container stdout and ships them to Loki.
+# Mounted at /etc/promtail/promtail.yaml inside the container.
+# Requires /var/run/docker.sock to be mounted (read-only).
+#
+# Log discovery uses docker_sd_configs so labels are automatically populated
+# from container metadata (compose service name, container name, etc.).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: translation-studio
+    batchwait: 1s
+    batchsize: 1048576
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          # Only collect logs from this project's containers
+          - name: label
+            values: ["com.docker.compose.project=translation_studio"]
+
+    relabel_configs:
+      # Use the compose service name as the "service" label in Loki
+      - source_labels: [__meta_docker_compose_service]
+        target_label: service
+
+      # Container name → container label
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+
+      # Map container log stream (stdout/stderr) to stream label
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream
+
+    pipeline_stages:
+      # Parse JSON logs emitted by structlog
+      - json:
+          expressions:
+            level: level
+            service: service
+            env: env
+            trace_id: trace_id
+            event: event
+
+      # Promote parsed fields to Loki labels (keep cardinality low)
+      - labels:
+          level:
+          service:
+          env:
+
+      # Use the "event" field as the log line if present
+      - output:
+          source: event

@@ -1,0 +1,75 @@
+# OpenTelemetry Collector configuration
+#
+# Receives OTLP from the Translation Studio API and worker (HTTP on 4318).
+# Exports:
+#   traces  → Tempo (OTLP gRPC on tempo:4317, internal docker network)
+#   metrics → exposed on :8889 for Prometheus to scrape
+#
+# See: https://opentelemetry.io/docs/collector/configuration/
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  # Drop health-check spans to reduce noise
+  filter/drop_health:
+    spans:
+      exclude:
+        match_type: regexp
+        attributes:
+          - key: http.route
+            value: "^/health.*"
+
+exporters:
+  # Traces → Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Metrics → exposed as a Prometheus scrape endpoint on :8889
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: ts
+    const_labels:
+      service: translation-studio
+
+  # Debug exporter (set verbosity: detailed for troubleshooting)
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/drop_health, batch]
+      exporters: [otlp/tempo, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

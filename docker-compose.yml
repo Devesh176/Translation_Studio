@@ -1,7 +1,39 @@
 version: '3.8'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Translation Studio — Full stack including observability
+#
+# Application services: api, worker
+# Infrastructure:       postgres, redis
+# Observability:        otel-collector, prometheus, grafana, loki, tempo, promtail
+#
+# Grafana UI:   http://localhost:3000  (no login required in dev)
+# Prometheus:   http://localhost:9090
+# API:          http://localhost:8000
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://translation:translation@postgres:5432/translation
+  REDIS_URL: redis://redis:6379/0
+  OBJECT_STORAGE_LOCAL_DIR: /app/data/storage
+  # Tell the app to export traces to the OTel Collector
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+x-app-volumes: &app-volumes
+  - ./data:/app/data
+  - ./apps:/app/apps
+  - ./packages:/app/packages
+  - ./config:/app/config
+  - ./fonts:/app/fonts
+  - ./tests:/app/tests
+  - ./.env:/app/.env
+
 services:
+  # ── Application ────────────────────────────────────────────────────────────
+
   api:
+    image: translation_studio_api:latest
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -10,64 +42,173 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://translation:translation@postgres:5432/translation
-      - REDIS_URL=redis://redis:6379/0
-      - OBJECT_STORAGE_LOCAL_DIR=/app/data/storage
-    volumes:
-      - ./data:/app/data
-      - ./apps:/app/apps
-      - ./packages:/app/packages
-      - ./config:/app/config
-      - ./fonts:/app/fonts
-      - ./tests:/app/tests
-      - ./.env:/app/.env
+      <<: *app-env
+      SERVICE_NAME: translation-studio-api
+    volumes: *app-volumes
     depends_on:
       - postgres
       - redis
+      - otel-collector
     restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+      service: translation-studio-api
 
   worker:
+    image: translation_studio_worker:latest
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://translation:translation@postgres:5432/translation
-      - REDIS_URL=redis://redis:6379/0
-      - OBJECT_STORAGE_LOCAL_DIR=/app/data/storage
-    volumes:
-      - ./data:/app/data
-      - ./apps:/app/apps
-      - ./packages:/app/packages
-      - ./config:/app/config
-      - ./fonts:/app/fonts
-      - ./tests:/app/tests
-      - ./.env:/app/.env
-
-
+      <<: *app-env
+      SERVICE_NAME: translation-studio-worker
+    volumes: *app-volumes
     depends_on:
       - postgres
       - redis
+      - otel-collector
     restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+      service: translation-studio-worker
+
+  # ── Infrastructure ─────────────────────────────────────────────────────────
 
   postgres:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=translation
-      - POSTGRES_PASSWORD=translation
-      - POSTGRES_DB=translation
+      POSTGRES_USER: translation
+      POSTGRES_PASSWORD: translation
+      POSTGRES_DB: translation
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # ── Observability ──────────────────────────────────────────────────────────
+
+  # OTel Collector: receives OTLP from app, forwards traces → Tempo,
+  # exposes metrics scrape endpoint for Prometheus on :8889
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    command: ["--config=/etc/otel/otel-collector.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otel/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (for tools/CLIs on host)
+      - "4318:4318"   # OTLP HTTP (used by the app)
+      - "8889:8889"   # Prometheus metrics scrape endpoint
+      - "13133:13133" # health_check extension
+    depends_on:
+      - tempo
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # Prometheus: scrapes /metrics from api and from otel-collector
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+      - api
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # Loki: log aggregation backend
+  loki:
+    image: grafana/loki:3.0.0
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./config/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # Tempo: distributed tracing backend
+  tempo:
+    image: grafana/tempo:2.4.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP API (Grafana datasource)
+      # NOTE: port 4317 is NOT exposed to host — OTel Collector reaches
+      # it via the internal docker network as tempo:4317
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # Promtail: tails container stdout and ships JSON logs to Loki
+  promtail:
+    image: grafana/promtail:3.0.0
+    command: ["-config.file=/etc/promtail/promtail.yaml"]
+    volumes:
+      - ./config/promtail.yaml:/etc/promtail/promtail.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+  # Grafana: unified dashboard for Prometheus + Loki + Tempo
+  grafana:
+    image: grafana/grafana:10.4.2
+    environment:
+      # No login required in dev; remove these in production
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: translation_studio
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
 
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
