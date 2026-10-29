@@ -228,7 +228,7 @@ class PDFRenderer:
         italic = "italic" if st.is_italic else "normal"
         color = _hex(st.color_rgb)
         line_h = 1.25
-        centered = (
+        centered = bool(node.metadata.get("centered")) or (
             node.type != NodeType.LIST_ITEM
             and abs((node.bbox.x0 + node.bbox.x1) / 2 - page_node.width / 2) < 6.0
             and node.bbox.x0 > 60
@@ -236,7 +236,9 @@ class PDFRenderer:
         )
 
         rect = self._available_rect(page_node, node)
-        if centered:
+        if centered and node.metadata.get("centered"):
+            rect = pymupdf.Rect(node.bbox.x0, rect.y0, node.bbox.x1, rect.y1)
+        elif centered:
             half = max(node.bbox.width / 2, min(page_node.width / 2 - PAGE_MARGIN - 20, 260))
             rect = pymupdf.Rect(page_node.width / 2 - half, rect.y0, page_node.width / 2 + half, rect.y1)
 
