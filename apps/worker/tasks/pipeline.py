@@ -20,6 +20,10 @@ from packages.providers.openrouter.translation import OpenRouterTranslationProvi
 from packages.providers.base import TranslationRequest
 from packages.translation.cost_guard import CostGuard
 from packages.costs.ledger import CostCollector, CostLedger, estimate_tokens
+from packages.semantic.units import build_units, join_text, union_bbox, GroupingConfig
+from packages.semantic.segments import split_segments, is_label_like, glossary_hash
+from packages.semantic.qa import check_unit, llm_review
+from packages.core.config_loader import get_glossary
 from packages.translation.normalizer import TextNormalizer
 from packages.translation.protected_content import protect, validate_and_restore
 from packages.validation.invariants import InvariantValidator
@@ -219,16 +223,62 @@ class DocumentTranslationPipeline:
                 node_count=len(translatable),
             )
 
-            for page in ir.pages:
-                for node in page.nodes:
-                    await self._translate_node(
-                        node=node,
-                        document_id=document_id,
-                        src_lang=src_lang,
-                        tgt_lang=tgt_lang,
-                        user_requested_provider=user_requested_provider,
-                        costs=costs,
-                    )
+            runs = build_units(ir, GroupingConfig())
+            grouped = [r for r in runs if len(r) > 1]
+            logger.info("stu_built", document_id=document_id, nodes=len(all_nodes), units=len(runs),
+                        grouped_units=len(grouped), max_nodes_per_unit=max((len(r) for r in runs), default=0))
+            glossary = get_glossary(tgt_lang)
+            heading = ""
+            unit_texts = [join_text([n.source_text for n in r]) if len(r) > 1 else r[0].source_text for r in runs]
+            semantic_flags = 0
+            for idx, run in enumerate(runs):
+                lead = run[0]
+                override = None
+                if lead.type == NodeType.HEADING:
+                    heading = lead.source_text.strip()
+                if len(run) > 1:
+                    uid = f"stu_{lead.node_id}"
+                    override = unit_texts[idx]
+                    lead.metadata["stu"] = {"unit_id": uid, "role": "lead", "member_ids": [n.node_id for n in run[1:]],
+                                            "union_bbox": union_bbox(run),
+                                            "grouping": [dict(n.metadata.get("grouping", {}), node_id=n.node_id) for n in run[1:]]}
+                    for m in run[1:]:
+                        m.metadata["stu"] = {"unit_id": uid, "role": "member", "lead_id": lead.node_id}
+                        m.translated_text = ""
+                        m.translation_status = TranslationStatus.TRANSLATED
+                        m.validation_status = "PASS"
+                prose = lead.type in (NodeType.PARAGRAPH, NodeType.LIST_ITEM)
+                prev_t = next((unit_texts[j] for j in range(idx - 1, -1, -1)
+                               if runs[j][0].page_number == lead.page_number and runs[j][0].type != NodeType.CODE_BLOCK), "") if prose else ""
+                next_t = next((unit_texts[j] for j in range(idx + 1, len(runs))
+                               if runs[j][0].page_number == lead.page_number and runs[j][0].type != NodeType.CODE_BLOCK), "") if prose else ""
+                ctx = {"heading": heading, "previous": prev_t[-400:], "following": next_t[:400],
+                       "glossary": {k: v for k, v in glossary.items() if k.lower() in (override or lead.source_text).lower()}}
+                await self._translate_node(
+                    node=lead,
+                    document_id=document_id,
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    user_requested_provider=user_requested_provider,
+                    costs=costs,
+                    text_override=override,
+                    unit_ctx=ctx,
+                )
+                if lead.translation_status == TranslationStatus.TRANSLATED and prose and lead.translated_text:
+                    src_t = override or lead.source_text
+                    seg_ids = (lead.metadata.get("alignment") or {}).get("segment_ids")
+                    findings = check_unit(src_t, lead.translated_text, ctx["glossary"], src_lang=src_lang, tgt_lang=tgt_lang)
+                    if any(f["severity"] in ("medium", "high") for f in findings) and self.openrouter_provider.client.api_key:
+                        findings += await llm_review(self.openrouter_provider.client, src_t, lead.translated_text,
+                                                     ctx["glossary"], f"{prev_t[-200:]}\n...\n{next_t[:200:]}",
+                                                     src_lang, tgt_lang, costs)
+                    if findings:
+                        lead.metadata["semantic_findings"] = findings
+                        semantic_flags += 1
+                        logger.warning("semantic_findings", document_id=document_id, node_id=lead.node_id,
+                                       categories=[f["category"] for f in findings])
+            logger.info("semantic_qa_completed", document_id=document_id, flagged_units=semantic_flags,
+                        alignment_uncertain=sum(1 for n in all_nodes if (n.metadata.get("alignment") or {}).get("confidence", 1) < 1))
 
         # ------------------------------------------------------------------
         # 5. Render translated PDF
@@ -414,10 +464,13 @@ class DocumentTranslationPipeline:
         tgt_lang: str,
         user_requested_provider: Optional[str],
         costs: CostCollector,
+        text_override: Optional[str] = None,
+        unit_ctx: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Translate a single DocumentNode in-place, recording all metrics."""
+        """Translate a single DocumentNode (or its STU text) in-place, recording all metrics."""
+        src_text = text_override if text_override is not None else node.source_text
 
-        if not node.source_text.strip():
+        if not src_text.strip():
             return
 
         # Skip non-translatable node types
@@ -427,16 +480,22 @@ class DocumentTranslationPipeline:
             node.validation_status = "PASS"
             return
 
-        protected = protect(node.source_text)
+        protected = protect(src_text)
         node.metadata["protected_tokens"] = protected.mapping
 
         # If nothing translatable remains after protecting tokens, skip
         if not re.search(r"[^\W\d_]", re.sub(r"\u27e6P\d+\u27e7", "", protected.masked)):
-            node.translated_text = node.source_text
+            node.translated_text = src_text
             node.translation_status = TranslationStatus.SKIPPED
             node.validation_status = "PASS"
             return
 
+        unit_ctx = unit_ctx or {}
+        glossary = unit_ctx.get("glossary") or {}
+        ctx_sig = "g" + glossary_hash(glossary) + (
+            "|c" + glossary_hash({"p": unit_ctx.get("previous", "")[-120:], "n": unit_ctx.get("following", "")[:120:],
+                                  "h": unit_ctx.get("heading", "")}) if unit_ctx.get("previous") or unit_ctx.get("following")
+            or unit_ctx.get("heading") else "")
         routing = self.router.route(
             source_language=src_lang,
             target_language=tgt_lang,
@@ -454,7 +513,8 @@ class DocumentTranslationPipeline:
             target_language=tgt_lang,
             provider=routing.provider,
             model=routing.model or "native",
-            prompt_version="v2",
+            prompt_version="v3",
+            terminology_version=ctx_sig,
         )
         cached = await self.cache.get(cache_key)
 
@@ -477,7 +537,15 @@ class DocumentTranslationPipeline:
                 target_language=tgt_lang,
                 node_type=node.type,
                 spans=node.spans,
+                terminology=glossary,
+                context_before=unit_ctx.get("previous"),
+                context_after=unit_ctx.get("following"),
             )
+            segs = split_segments(protected.masked) if len(protected.masked) > 80 else []
+            if len(segs) > 1:
+                req.segments = segs
+                req.context = {"heading": unit_ctx.get("heading", ""), "previous_paragraph": unit_ctx.get("previous", ""),
+                               "following_paragraph": unit_ctx.get("following", ""), "glossary": glossary}
             errors: list = []
             attempts = (
                 ["bodhan"] * 4 + ["openrouter"]
@@ -495,6 +563,14 @@ class DocumentTranslationPipeline:
                         self.bodhan_provider if prov == "bodhan" else self.openrouter_provider
                     )
                     result = await provider_obj.translate(req)
+                    if prov == "openrouter" and req.segments and not (result.raw_response or {}).get("alignment"):
+                        node.metadata["alignment"] = {"mode": "paragraph", "confidence": 0.5,
+                                                      "issue": "segment_contract_unavailable"}
+                    elif (result.raw_response or {}).get("alignment"):
+                        node.metadata["alignment"] = (result.raw_response or {})["alignment"]
+                    elif prov == "bodhan" and req.segments:
+                        node.metadata["alignment"] = {"mode": "paragraph", "confidence": 0.5,
+                                                      "issue": "provider_has_no_segment_contract"}
                     t_dur = time.perf_counter() - t_start
                     TRANSLATION_LATENCY_SECONDS.labels(provider=prov).observe(t_dur)
 
@@ -539,7 +615,8 @@ class DocumentTranslationPipeline:
                     TextNormalizer.clean_llm_markdown_wrappers(result.translated_text)
                 )
                 _, errors = validate_and_restore(masked_out, protected.mapping)
-                if not errors and src_lang != tgt_lang and masked_out.strip() == protected.masked.strip():
+                if (not errors and src_lang != tgt_lang and masked_out.strip() == protected.masked.strip()
+                        and not is_label_like(protected.masked)):
                     errors = ["UNTRANSLATED_ECHO"]
 
                 if not errors:
@@ -571,7 +648,7 @@ class DocumentTranslationPipeline:
         if perrors:
             node.metadata["protected_errors"] = perrors
             node.metadata["raw_output"] = masked_out
-            node.translated_text = node.source_text
+            node.translated_text = src_text
             node.translation_status = TranslationStatus.FAILED
             node.validation_status = "FAIL_PROTECTED_TOKENS"
             VALIDATION_FAILURES_TOTAL.labels(check_type="protected_tokens").inc()
@@ -601,8 +678,8 @@ class DocumentTranslationPipeline:
             node.validation_status = "FAIL_SENTINEL_LEAK"
             VALIDATION_FAILURES_TOTAL.labels(check_type="sentinel_leak").inc()
         else:
-            valid_num, _ = InvariantValidator.validate_numbers(node.source_text, node.translated_text)
-            valid_urls, _ = InvariantValidator.validate_urls_and_emails(node.source_text, node.translated_text)
+            valid_num, _ = InvariantValidator.validate_numbers(src_text, node.translated_text)
+            valid_urls, _ = InvariantValidator.validate_urls_and_emails(src_text, node.translated_text)
             if valid_num and valid_urls:
                 node.validation_status = "PASS"
             elif not valid_num:

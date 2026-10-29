@@ -130,6 +130,21 @@ def _context(page_nodes: List[DocumentNode], chosen: List[DocumentNode]) -> Tupl
     return before[-400:], after[:400]
 
 
+def _to_unit_leads(page_nodes: List[DocumentNode], hit: List[DocumentNode]) -> List[DocumentNode]:
+    """A box of a merged paragraph (STU) resolves to the unit's lead node, which carries the translation."""
+    by_id = {n.node_id: n for n in page_nodes}
+    out: List[DocumentNode] = []
+    seen = set()
+    for n in hit:
+        stu = n.metadata.get("stu") or {}
+        if stu.get("role") == "member":
+            n = by_id.get(stu.get("lead_id"), n)
+        if n.node_id not in seen:
+            seen.add(n.node_id)
+            out.append(n)
+    return out
+
+
 def resolve_selection(ir: DocumentIR, selection: dict) -> Resolved:
     kind = selection["kind"]
     page_no = int(selection["page"])
@@ -145,7 +160,7 @@ def resolve_selection(ir: DocumentIR, selection: dict) -> Resolved:
         rects = [tuple(r) for r in (selection.get("rects") or [])]  # type: ignore[misc]
 
     hit = [n for n in page.nodes if n.source_text.strip() and any(_hits(n, r) for r in rects)]
-    hit = _reading_order(hit)
+    hit = _reading_order(_to_unit_leads(page.nodes, hit))
 
     if kind == "text":
         quote = selection.get("quote") or ""

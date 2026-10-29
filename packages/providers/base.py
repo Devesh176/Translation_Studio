@@ -41,6 +41,8 @@ class TranslationRequest:
     user_prompt: Optional[str] = None
     model_policy: str = "default"
     spans: List[TextSpan] = field(default_factory=list)
+    segments: Optional[List[Dict[str, str]]] = None
+    context: Optional[Dict[str, Any]] = None
 
 
 @dataclass

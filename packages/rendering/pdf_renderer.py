@@ -141,6 +141,9 @@ class PDFRenderer:
     @staticmethod
     def _text_rect(node: DocumentNode) -> pymupdf.Rect:
         b = node.bbox
+        ub = (node.metadata.get("stu") or {}).get("union_bbox")
+        if ub:
+            return pymupdf.Rect(*ub)
         x0 = b.x0
         mb = node.metadata.get("marker_bbox")
         if mb and mb[2] > b.x0 and mb[0] <= b.x0 + 0.5:
@@ -170,7 +173,8 @@ class PDFRenderer:
 
     def _clear_source_text(self, page, nodes: List[DocumentNode], overlay: bool) -> None:
         for node in nodes:
-            if not (node.translated_text or "").strip():
+            is_member = (node.metadata.get("stu") or {}).get("role") == "member"
+            if not (node.translated_text or "").strip() and not is_member:
                 continue
             if node.metadata.get("math_only"):
                 continue
@@ -179,6 +183,14 @@ class PDFRenderer:
             r = self._text_rect(node)
             pad_l = 0.0 if node.metadata.get("marker_bbox") else 0.5
             r = pymupdf.Rect(r.x0 - pad_l, r.y0 - 0.5, r.x1 + 0.5, r.y1 + 0.5)
+            mb = node.metadata.get("marker_bbox")
+            if mb and node.bbox.y1 > mb[3] + 2.0:
+                # wrapped source lines below the marker line sit left of the text rect
+                below = pymupdf.Rect(node.bbox.x0 - 0.5, mb[3] - 1.0, r.x0, node.bbox.y1 + 0.5)
+                if overlay:
+                    page.draw_rect(below, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                else:
+                    page.add_redact_annot(below, fill=False)
             if overlay:
                 page.draw_rect(r, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
             else:
@@ -195,13 +207,15 @@ class PDFRenderer:
         x1 = max(tr.x1, right_edge)
         y1_limit = page_node.height - PAGE_MARGIN
         for other in page_node.nodes:
-            if other is node:
+            if other is node or (other.metadata.get("stu") or {}).get("lead_id") == node.node_id:
                 continue
-            if other.bbox.y0 >= node.bbox.y1 - 1.0 and other.bbox.x0 < x1 and other.bbox.x1 > tr.x0:
+            if other.bbox.y0 >= tr.y1 - 1.0 and other.bbox.x0 < x1 and other.bbox.x1 > tr.x0:
                 y1_limit = min(y1_limit, other.bbox.y0 - 1.0)
         return pymupdf.Rect(tr.x0, tr.y0, x1, max(tr.y1, y1_limit))
 
     def _draw_node(self, page, page_node, node: DocumentNode, css: str, archive, families: str, math_imgs=None) -> None:
+        if (node.metadata.get("stu") or {}).get("role") == "member":
+            return
         text = node.translated_text or node.source_text
         if not text.strip():
             return

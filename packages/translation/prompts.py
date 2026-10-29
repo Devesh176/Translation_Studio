@@ -67,6 +67,14 @@ class PromptManager:
         ]
 
     @classmethod
+    def get_unit_translation_messages(cls, segments, context: dict, src_lang: str, tgt_lang: str) -> list[Dict[str, str]]:
+        import json
+        sys_msg = cls._get_template("unit_translation_v1", "system").format(source_language=src_lang, target_language=tgt_lang)
+        payload = json.dumps({"segments": segments, "context": context}, ensure_ascii=False)
+        usr_msg = cls._get_template("unit_translation_v1", "user").format(payload=payload)
+        return [{"role": "system", "content": sys_msg}, {"role": "user", "content": usr_msg}]
+
+    @classmethod
     def get_section_edit_messages(
         cls,
         source_text: str,

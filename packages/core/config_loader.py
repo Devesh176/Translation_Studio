@@ -89,3 +89,12 @@ def get_languages_config() -> Dict[str, Any]:
 def get_fonts_config() -> Dict[str, Any]:
     """Return the parsed contents of config/fonts.yaml."""
     return _load_yaml("fonts.yaml")
+
+
+def get_glossary(target_language: str) -> Dict[str, str]:
+    """Optional config/glossary.yaml: {<lang>: {source term: required translation}}."""
+    try:
+        data = _load_yaml("glossary.yaml") or {}
+    except Exception:
+        return {}
+    return dict(data.get(target_language) or {})
