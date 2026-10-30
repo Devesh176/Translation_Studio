@@ -398,11 +398,10 @@ select option:checked {
   color: #ffffff !important;
 }
 
-.swap-btn {
+.swap-btn, .direction-icon {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -412,10 +411,18 @@ select option:checked {
   transition: all 0.2s ease;
 }
 
+.swap-btn {
+  cursor: pointer;
+}
+
 .swap-btn:hover {
   color: var(--accent-primary);
   background: var(--bg-hover);
   transform: rotate(180deg);
+}
+
+.direction-icon {
+  opacity: 0.6;
 }
 
 .engine-group {
