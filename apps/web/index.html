@@ -1,32 +1,47 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Translation Studio — Structure-Preserving Document AI</title>
+  <title>Translation Studio — Structure-Preserving Indic Document AI</title>
+  
+  <!-- Modern Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <!-- PDF.js for crisp client-side PDF rendering -->
+  <!-- PDF.js for client-side rendering -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div id="app" class="app-container">
+    
     <!-- Top Navigation Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="logo-badge">
-          <i data-lucide="languages" class="logo-icon"></i>
-          <span class="logo-text">Translation<span class="logo-accent">Studio</span></span>
+        <a href="/" class="logo-badge" title="Translation Studio Home">
+          <div class="logo-icon-wrapper">
+            <i data-lucide="sparkles" class="logo-sparkle"></i>
+            <i data-lucide="languages" class="logo-icon"></i>
+          </div>
+          <div class="logo-text-group">
+            <span class="logo-text">Translation<span class="logo-accent">Studio</span></span>
+            <span class="logo-subtext">Indic Document AI</span>
+          </div>
           <span class="version-tag">V1.0</span>
-        </div>
+        </a>
+
         <div class="header-divider"></div>
+
         <div id="activeDocInfo" class="active-doc-pill hidden">
-          <i data-lucide="file-text" class="pill-icon"></i>
-          <span id="docFilename" class="doc-title">document.pdf</span>
+          <div class="doc-icon-wrap">
+            <i data-lucide="file-text" class="pill-icon"></i>
+          </div>
+          <span id="docFilename" class="doc-title" title="Current Document">document.pdf</span>
           <span id="docBadge" class="doc-badge">DIGITAL</span>
           <span id="pageCountBadge" class="page-badge">1 Page</span>
         </div>
@@ -34,70 +49,94 @@
 
       <div class="header-center">
         <div class="translation-controls">
-          <div class="select-group">
-            <label>Source</label>
-            <select id="sourceLangSelect" class="styled-select">
-              <option value="auto">Auto-Detect</option>
-              <option value="en" selected>English</option>
-              <option value="hi">Hindi (हिंदी)</option>
-              <option value="ta">Tamil (தமிழ்)</option>
-              <option value="te">Telugu (తెలుగు)</option>
-              <option value="kn">Kannada (ಕನ್ನಡ)</option>
-              <option value="ml">Malayalam (മലയാളം)</option>
-              <option value="bn">Bengali (বাংলা)</option>
-              <option value="mr">Marathi (मराठी)</option>
-              <option value="gu">Gujarati (ગુજરાતી)</option>
-              <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
-            </select>
+          <div class="control-pill-group">
+            <div class="select-group">
+              <span class="select-label">Source</span>
+              <div class="select-wrapper">
+                <i data-lucide="globe" class="select-icon"></i>
+                <select id="sourceLangSelect" class="styled-select" title="Source Language">
+                  <option value="auto">Auto-Detect</option>
+                  <option value="en" selected>English</option>
+                  <option value="hi">Hindi (हिंदी)</option>
+                  <option value="ta">Tamil (தமிழ்)</option>
+                  <option value="te">Telugu (తెలుగు)</option>
+                  <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                  <option value="ml">Malayalam (മലയാളം)</option>
+                  <option value="bn">Bengali (বাংলা)</option>
+                  <option value="mr">Marathi (मराठी)</option>
+                  <option value="gu">Gujarati (ગુજરાતી)</option>
+                  <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+                </select>
+              </div>
+            </div>
+
+            <button id="btnSwapLang" class="swap-btn" type="button" title="Swap languages">
+              <i data-lucide="arrow-right-left"></i>
+            </button>
+
+            <div class="select-group">
+              <span class="select-label">Target Script</span>
+              <div class="select-wrapper">
+                <i data-lucide="sparkle" class="select-icon accent"></i>
+                <select id="targetLangSelect" class="styled-select" title="Target Language">
+                  <option value="hi" selected>Hindi (हिंदी)</option>
+                  <option value="ta">Tamil (தமிழ்)</option>
+                  <option value="te">Telugu (తెలుగు)</option>
+                  <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                  <option value="ml">Malayalam (മലയാളം)</option>
+                  <option value="bn">Bengali (বাংলা)</option>
+                  <option value="mr">Marathi (मराठी)</option>
+                  <option value="gu">Gujarati (ગુજરાતી)</option>
+                  <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="select-group engine-group">
+              <span class="select-label">AI Engine</span>
+              <div class="select-wrapper">
+                <i data-lucide="cpu" class="select-icon"></i>
+                <select id="providerSelect" class="styled-select" title="Engine Router">
+                  <option value="" selected>Auto (Bodhan Indic MT / OpenRouter)</option>
+                  <option value="bodhan">Bodhan AI (Indic MT)</option>
+                  <option value="openrouter">OpenRouter (Llama 3.3 70B)</option>
+                </select>
+              </div>
+            </div>
           </div>
 
-          <div class="arrow-icon">
-            <i data-lucide="arrow-right"></i>
-          </div>
-
-          <div class="select-group">
-            <label>Target Language</label>
-            <select id="targetLangSelect" class="styled-select">
-              <option value="hi" selected>Hindi (हिंदी)</option>
-              <option value="ta">Tamil (தமிழ்)</option>
-              <option value="te">Telugu (తెలుగు)</option>
-              <option value="kn">Kannada (ಕನ್ನಡ)</option>
-              <option value="ml">Malayalam (മലയാളം)</option>
-              <option value="bn">Bengali (বাংলা)</option>
-              <option value="mr">Marathi (मराठी)</option>
-              <option value="gu">Gujarati (ગુજરાતી)</option>
-              <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
-              <option value="en">English</option>
-            </select>
-          </div>
-
-          <div class="select-group">
-            <label>Engine Router</label>
-            <select id="providerSelect" class="styled-select">
-              <option value="" selected>Auto (Bodhan Indic MT / OpenRouter)</option>
-              <option value="bodhan">Bodhan AI (Indic MT)</option>
-              <option value="openrouter">OpenRouter (Llama 3.3 70B)</option>
-            </select>
-          </div>
-
-          <button id="btnTranslate" class="btn btn-primary" disabled>
-            <i data-lucide="sparkles"></i>
+          <button id="btnTranslate" class="btn btn-primary btn-glow" disabled>
+            <i data-lucide="zap" class="btn-icon-pulse"></i>
             <span>Translate Document</span>
           </button>
         </div>
       </div>
 
       <div class="header-right">
-        <div id="costIndicator" class="cost-pill" title="Model cost so far for this document">
-          <i data-lucide="coins"></i>
-          <span id="costTotal">$0.0000</span>
+        <div id="costIndicator" class="cost-pill" title="Accumulated translation cost">
+          <div class="cost-icon-box">
+            <i data-lucide="receipt"></i>
+          </div>
+          <div class="cost-text-box">
+            <span class="cost-label">Cost</span>
+            <span id="costTotal" class="cost-val">$0.0000</span>
+          </div>
           <span id="costDetail" class="cost-detail"></span>
         </div>
-        <div class="status-indicator">
+
+        <div class="status-indicator" title="Service connection status">
           <span class="status-dot online"></span>
-          <span class="status-label">Backend Online</span>
+          <span class="status-label">Online</span>
         </div>
-        <button id="btnOpenUpload" class="btn btn-secondary">
+
+        <!-- Dark / Light Theme Toggle -->
+        <button id="themeToggleBtn" class="theme-toggle-btn" type="button" aria-label="Toggle Dark and Light theme" title="Toggle theme">
+          <i data-lucide="sun" class="sun-icon"></i>
+          <i data-lucide="moon" class="moon-icon"></i>
+        </button>
+
+        <button id="btnOpenUpload" class="btn btn-outline" type="button">
           <i data-lucide="upload-cloud"></i>
           <span>Upload PDF</span>
         </button>
@@ -109,10 +148,15 @@
       <div class="modal-card">
         <div class="modal-header">
           <div class="modal-title">
-            <i data-lucide="file-up" class="title-icon"></i>
-            <h3>Upload PDF Document</h3>
+            <div class="modal-icon-badge">
+              <i data-lucide="file-up"></i>
+            </div>
+            <div>
+              <h3>Upload Document</h3>
+              <p class="modal-subtitle">PDFs are analyzed for layout, math, tables & script structure</p>
+            </div>
           </div>
-          <button id="btnCloseModal" class="btn-icon">
+          <button id="btnCloseModal" class="btn-icon-close" type="button" aria-label="Close modal">
             <i data-lucide="x"></i>
           </button>
         </div>
@@ -122,27 +166,44 @@
             <input type="file" id="fileInput" accept=".pdf" class="file-input">
             <div class="dropzone-content">
               <div class="upload-icon-wrapper">
-                <i data-lucide="upload-cloud" class="upload-icon"></i>
+                <div class="pulse-ring"></div>
+                <i data-lucide="cloud-upload" class="upload-icon"></i>
               </div>
-              <h4>Drag & drop your PDF here</h4>
-              <p>Supports Digital, Scanned & Multi-column PDFs up to 50MB</p>
+              <h4>Drag & drop your PDF file here</h4>
+              <p class="dropzone-hint">Supports Digital, Scanned & Multi-column documents up to 50MB</p>
               <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
-                Browse Files
+                <i data-lucide="folder-search"></i>
+                <span>Browse Files</span>
               </button>
             </div>
           </div>
 
           <div class="quick-samples">
-            <span class="sample-label">Or try a sample document:</span>
+            <div class="samples-header">
+              <i data-lucide="wand-sparkles"></i>
+              <span>Or try an instant sample document:</span>
+            </div>
             <div class="sample-chips">
-              <button type="button" class="chip" onclick="loadSampleDocument('financial')">
-                <i data-lucide="file-text"></i> Financial Report (English)
+              <button type="button" class="sample-card" onclick="loadSampleDocument('financial')">
+                <div class="sample-icon-wrap fin"><i data-lucide="bar-chart-3"></i></div>
+                <div class="sample-info">
+                  <strong>Financial Statement</strong>
+                  <span>Revenue tables & operating margins</span>
+                </div>
               </button>
-              <button type="button" class="chip" onclick="loadSampleDocument('legal')">
-                <i data-lucide="file-text"></i> Legal Notice (English)
+              <button type="button" class="sample-card" onclick="loadSampleDocument('legal')">
+                <div class="sample-icon-wrap leg"><i data-lucide="scale"></i></div>
+                <div class="sample-info">
+                  <strong>Mutual NDA</strong>
+                  <span>Confidentiality clauses & terms</span>
+                </div>
               </button>
-              <button type="button" class="chip" onclick="loadSampleDocument('technical')">
-                <i data-lucide="file-text"></i> Technical Abstract (English)
+              <button type="button" class="sample-card" onclick="loadSampleDocument('technical')">
+                <div class="sample-icon-wrap tech"><i data-lucide="cpu"></i></div>
+                <div class="sample-info">
+                  <strong>Technical Paper</strong>
+                  <span>Transformer formulas & benchmark</span>
+                </div>
               </button>
             </div>
           </div>
@@ -158,19 +219,19 @@
         <div class="panel-header preview-header">
           <div class="preview-tabs">
             <button id="tabTranslated" class="tab-btn active" onclick="switchPreviewTab('translated')">
-              <i data-lucide="file-check"></i>
-              <span>Translated PDF</span>
+              <i data-lucide="file-check-2"></i>
+              <span>Translated Document</span>
               <span id="qaScoreBadge" class="qa-badge hidden">QA: 100%</span>
             </button>
             <button id="tabSource" class="tab-btn" onclick="switchPreviewTab('source')">
-              <i data-lucide="file"></i>
+              <i data-lucide="file-text"></i>
               <span>Original Source</span>
             </button>
           </div>
 
           <div class="preview-toolbar">
             <div class="version-selector-group">
-              <label><i data-lucide="history"></i> Version:</label>
+              <label for="versionSelect"><i data-lucide="git-branch"></i> Version:</label>
               <select id="versionSelect" class="version-select" onchange="switchVersion(this.value)">
                 <option value="">v1.0 (Initial)</option>
               </select>
@@ -184,27 +245,122 @@
         </div>
 
         <div class="preview-viewport">
+          
+          <!-- Animated Pipeline Processing Overlay -->
           <div id="previewLoading" class="preview-overlay hidden">
-            <div class="spinner"></div>
-            <p id="loadingMessage">Generating structure-preserving PDF...</p>
+            <div class="pipeline-loader-card">
+              <div class="loader-spinner-box">
+                <div class="spinner-ring"></div>
+                <i data-lucide="languages" class="spinner-icon"></i>
+              </div>
+              <h3 id="loadingMessage">Translating Document...</h3>
+              <p class="loader-subtitle">Preserving document geometry, tables, and typography</p>
+              
+              <div class="pipeline-stepper">
+                <div class="step-item active">
+                  <span class="step-dot"></span>
+                  <span class="step-label">Parse & Classify</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item active">
+                  <span class="step-dot"></span>
+                  <span class="step-label">STU Grouping</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item active">
+                  <span class="step-dot"></span>
+                  <span class="step-label">Indic MT</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item active">
+                  <span class="step-dot"></span>
+                  <span class="step-label">HarfBuzz CTL</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step-item active">
+                  <span class="step-dot"></span>
+                  <span class="step-label">Visual QA</span>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div id="previewPlaceholder" class="empty-state">
-            <i data-lucide="file-search" class="empty-icon"></i>
-            <p>Upload and translate a document to preview the rendered PDF</p>
+          <!-- Hero Onboarding Empty State -->
+          <div id="previewPlaceholder" class="empty-state hero-empty-state">
+            <div class="hero-glow-backdrop"></div>
+            
+            <div class="hero-welcome-badge">
+              <i data-lucide="sparkles"></i>
+              <span>Structure-Preserving Indic Translation Engine</span>
+            </div>
+
+            <h2 class="hero-title">Translate PDFs without losing <span class="gradient-text">Layout & Style</span></h2>
+            <p class="hero-description">
+              Upload any document. Our engine parses bounding boxes, preserves tables and equations, and renders native Indic scripts with HarfBuzz Complex Text Layout.
+            </p>
+
+            <div class="hero-drop-card" onclick="document.getElementById('fileInput').click()">
+              <div class="hero-drop-icon-box">
+                <i data-lucide="upload-cloud"></i>
+              </div>
+              <div class="hero-drop-text">
+                <strong>Click to upload PDF or drag & drop here</strong>
+                <span>Supports digital & scanned documents up to 50MB</span>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('fileInput').click()">
+                Select PDF
+              </button>
+            </div>
+
+            <div class="hero-sample-section">
+              <span class="hero-sample-title"><i data-lucide="play-circle"></i> Or try an instant demo document:</span>
+              <div class="hero-sample-buttons">
+                <button type="button" class="btn-sample-action" onclick="loadSampleDocument('financial')">
+                  <i data-lucide="trending-up"></i>
+                  <span>Financial Statement</span>
+                </button>
+                <button type="button" class="btn-sample-action" onclick="loadSampleDocument('legal')">
+                  <i data-lucide="shield-check"></i>
+                  <span>Legal Agreement</span>
+                </button>
+                <button type="button" class="btn-sample-action" onclick="loadSampleDocument('technical')">
+                  <i data-lucide="terminal"></i>
+                  <span>Technical Abstract</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="hero-features-strip">
+              <div class="feat-pill"><i data-lucide="layers"></i> HarfBuzz CTL Shaping</div>
+              <div class="feat-pill"><i data-lucide="check-check"></i> Invariant & Formula Guard</div>
+              <div class="feat-pill"><i data-lucide="globe-2"></i> 10+ Indic Languages</div>
+              <div class="feat-pill"><i data-lucide="wand-2"></i> Section Prompt Copilot</div>
+            </div>
           </div>
 
+          <!-- PDF Viewer Container -->
           <div id="pdfViewerContainer" class="pdf-viewer-container hidden">
             <div class="selection-toolbar">
-              <button id="modeText" class="mode-btn active" title="Highlight text to edit it"><i data-lucide="text-cursor"></i> Highlight text</button>
-              <button id="modeBox" class="mode-btn" title="Drag a rectangle over the area to edit"><i data-lucide="square-dashed"></i> Draw box</button>
-              <div class="zoom-group">
-                <button id="zoomOut" class="mode-btn" title="Zoom out (Ctrl+scroll)"><i data-lucide="zoom-out"></i></button>
-                <button id="zoomLabel" class="mode-btn" title="Reset zoom">100%</button>
-                <button id="zoomIn" class="mode-btn" title="Zoom in"><i data-lucide="zoom-in"></i></button>
+              <div class="tools-left">
+                <button id="modeText" class="mode-btn active" title="Highlight text to edit it">
+                  <i data-lucide="text-cursor"></i>
+                  <span>Highlight text</span>
+                </button>
+                <button id="modeBox" class="mode-btn" title="Drag a rectangle over the area to edit">
+                  <i data-lucide="square-dashed"></i>
+                  <span>Draw box</span>
+                </button>
               </div>
+
+              <div class="zoom-group">
+                <button id="zoomOut" class="mode-btn icon-only" title="Zoom out (Ctrl+scroll)"><i data-lucide="zoom-out"></i></button>
+                <button id="zoomLabel" class="mode-btn zoom-indicator" title="Reset zoom">100%</button>
+                <button id="zoomIn" class="mode-btn icon-only" title="Zoom in"><i data-lucide="zoom-in"></i></button>
+              </div>
+
               <span class="mode-hint" id="modeHint">Highlight text on the page, then describe the change.</span>
             </div>
+            
             <div id="pdfPages" class="pdf-pages"></div>
           </div>
         </div>
@@ -214,51 +370,90 @@
       <section class="panel panel-copilot">
         <div class="panel-header">
           <div class="panel-title">
-            <i data-lucide="message-square-code"></i>
-            <h3>Prompt Editor</h3>
+            <div class="copilot-icon-wrap">
+              <i data-lucide="message-square-code"></i>
+            </div>
+            <div>
+              <h3>AI Section Copilot</h3>
+              <span class="copilot-subtitle">Natural language section editing</span>
+            </div>
           </div>
-          <span class="live-pill"><span class="pulse-dot"></span> Live Copilot</span>
+          <span class="live-pill"><span class="pulse-dot"></span> Live</span>
         </div>
 
-        <div id="copilotEmptyState" class="empty-state">
-          <i data-lucide="mouse-pointer-click" class="empty-icon"></i>
-          <h4>Nothing Selected</h4>
-          <p>Highlight text on the PDF, or switch to "Draw box" and drag a rectangle over the area you want to change. Then describe the edit.</p>
+        <div id="copilotEmptyState" class="empty-state copilot-empty">
+          <div class="copilot-empty-icon-wrap">
+            <i data-lucide="mouse-pointer-click" class="empty-icon"></i>
+          </div>
+          <h4>No Section Selected</h4>
+          <p>Highlight text directly on the rendered PDF or use <strong>Draw box</strong> to select a bounding area. Describe your edit, and the model will refine that section with zero formatting loss.</p>
+          
+          <div class="copilot-guide-steps">
+            <div class="guide-step">
+              <span class="step-num">1</span>
+              <span>Select text or draw box on PDF</span>
+            </div>
+            <div class="guide-step">
+              <span class="step-num">2</span>
+              <span>Choose a prompt or type instructions</span>
+            </div>
+            <div class="guide-step">
+              <span class="step-num">3</span>
+              <span>Re-render instantly with HarfBuzz</span>
+            </div>
+          </div>
         </div>
 
         <div id="copilotActivePanel" class="copilot-workspace hidden">
           <div class="node-context-card">
             <div class="context-card-header">
-              <span id="selectionKind" class="node-type-badge">TEXT</span>
-              <span id="selectionPage" class="node-id-mono">page 1</span>
-              <button id="btnClearSelection" class="btn-icon" title="Clear selection"><i data-lucide="x"></i></button>
+              <div class="context-badges">
+                <span id="selectionKind" class="node-type-badge">TEXT</span>
+                <span id="selectionPage" class="node-id-mono">page 1</span>
+              </div>
+              <button id="btnClearSelection" class="btn-icon" title="Clear selection">
+                <i data-lucide="x"></i>
+              </button>
             </div>
             <div class="context-field">
-              <label>Selected</label>
+              <label><i data-lucide="quote"></i> Selected Text</label>
               <div id="selectionPreview" class="text-display target"></div>
             </div>
           </div>
 
           <div class="copilot-input-box">
             <label for="promptInput" class="input-label">
-              <i data-lucide="wand-2"></i> What should change?
+              <i data-lucide="wand-2"></i> What would you like to refine?
             </label>
             <div class="quick-prompts">
-              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this more formal and professional.')">Formal</button>
-              <button class="quick-prompt-btn" onclick="setQuickPrompt('Make this more concise while keeping all numbers.')">Concise</button>
-              <button class="quick-prompt-btn" onclick="setQuickPrompt('Simplify the language for a general audience.')">Simple</button>
+              <button type="button" class="quick-prompt-btn" onclick="setQuickPrompt('Make this more formal and professional.')">
+                <i data-lucide="award"></i> Formal
+              </button>
+              <button type="button" class="quick-prompt-btn" onclick="setQuickPrompt('Make this more concise while keeping all numbers.')">
+                <i data-lucide="scissors"></i> Concise
+              </button>
+              <button type="button" class="quick-prompt-btn" onclick="setQuickPrompt('Simplify the language for a general audience.')">
+                <i data-lucide="smile"></i> Simple
+              </button>
+              <button type="button" class="quick-prompt-btn" onclick="setQuickPrompt('Ensure all legal terminology is precisely rendered.')">
+                <i data-lucide="shield"></i> Legal
+              </button>
             </div>
-            <textarea id="promptInput" class="prompt-textarea" rows="3" placeholder="e.g. 'Use a more formal tone'"></textarea>
-            <button id="btnApplyPromptEdit" class="btn btn-primary btn-block">
+            <div class="textarea-wrapper">
+              <textarea id="promptInput" class="prompt-textarea" rows="3" placeholder="e.g. 'Use a more formal tone and keep numbers unchanged'"></textarea>
+            </div>
+            <button id="btnApplyPromptEdit" class="btn btn-primary btn-block btn-glow">
               <i data-lucide="sparkles"></i>
-              <span>Apply Edit</span>
+              <span>Apply Instruction Edit</span>
             </button>
           </div>
 
           <div id="editResult" class="edit-result hidden"></div>
 
           <div class="edit-history-section">
-            <h4><i data-lucide="git-commit"></i> Edits this session</h4>
+            <div class="history-header">
+              <h4><i data-lucide="git-commit"></i> Session Version History</h4>
+            </div>
             <div id="editHistoryList" class="history-list">
               <div class="history-item empty">No edits yet</div>
             </div>
@@ -275,7 +470,9 @@
 
   <script src="/static/app.js"></script>
   <script>
-    lucide.createIcons();
+    if (window.lucide) {
+      lucide.createIcons();
+    }
   </script>
 </body>
 </html>

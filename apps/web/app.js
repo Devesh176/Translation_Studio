@@ -65,10 +65,58 @@ const modeHint = document.getElementById('modeHint');
 const costTotal = document.getElementById('costTotal');
 const costDetail = document.getElementById('costDetail');
 const editHistoryList = document.getElementById('editHistoryList');
+const themeToggleBtn = document.getElementById('themeToggleBtn');
+const btnSwapLang = document.getElementById('btnSwapLang');
+
+// Theme Management
+function initTheme() {
+  const savedTheme = localStorage.getItem('ts_theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('ts_theme', next);
+  if (window.lucide) lucide.createIcons();
+}
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener('click', toggleTheme);
+}
+initTheme();
+
+// Language Swap
+if (btnSwapLang) {
+  btnSwapLang.addEventListener('click', () => {
+    const srcVal = sourceLangSelect.value;
+    const tgtVal = targetLangSelect.value;
+    if (srcVal === 'auto') {
+      sourceLangSelect.value = 'en';
+    } else {
+      sourceLangSelect.value = tgtVal;
+    }
+    targetLangSelect.value = srcVal === 'auto' ? 'hi' : srcVal;
+  });
+}
 
 // Event Listeners
-btnOpenUpload.addEventListener('click', () => uploadModal.classList.add('active'));
+btnOpenUpload.addEventListener('click', () => {
+  uploadModal.classList.add('active');
+  if (window.lucide) lucide.createIcons();
+});
 btnCloseModal.addEventListener('click', () => uploadModal.classList.remove('active'));
+
+uploadModal.addEventListener('click', (e) => {
+  if (e.target === uploadModal) {
+    uploadModal.classList.remove('active');
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && uploadModal.classList.contains('active')) {
+    uploadModal.classList.remove('active');
+  }
+});
 
 dropzone.addEventListener('dragover', (e) => {
   e.preventDefault();
@@ -471,7 +519,11 @@ async function refreshCosts() {
     if (!r.ok) return;
     const c = await r.json();
     costTotal.textContent = `$${c.total_usd.toFixed(4)}`;
-    costDetail.textContent = `translate $${c.translate_usd.toFixed(4)} · edits $${c.edit_usd.toFixed(4)}${c.has_estimates ? ' (est.)' : ''}`;
+    if (costDetail) costDetail.textContent = '';
+    const costIndicator = document.getElementById('costIndicator');
+    if (costIndicator) {
+      costIndicator.title = `Total: $${c.total_usd.toFixed(4)} (Translation: $${c.translate_usd.toFixed(4)}, Edits: $${c.edit_usd.toFixed(4)})${c.has_estimates ? ' [est.]' : ''}`;
+    }
   } catch (e) { /* indicator is best effort */ }
 }
 
@@ -527,12 +579,29 @@ function updatePdfPreview(url) {
 }
 
 
+let stepperInterval = null;
+
 function showLoading(msg = 'Processing...') {
   loadingMessage.textContent = msg;
   previewLoading.classList.remove('hidden');
+  if (window.lucide) lucide.createIcons();
+
+  const stepItems = document.querySelectorAll('.pipeline-stepper .step-item');
+  if (stepItems.length) {
+    let currentStep = 0;
+    stepItems.forEach((item, idx) => item.classList.toggle('active', idx === 0));
+    clearInterval(stepperInterval);
+    stepperInterval = setInterval(() => {
+      currentStep = (currentStep + 1) % stepItems.length;
+      stepItems.forEach((item, idx) => {
+        item.classList.toggle('active', idx <= currentStep);
+      });
+    }, 1100);
+  }
 }
 
 function hideLoading() {
+  clearInterval(stepperInterval);
   previewLoading.classList.add('hidden');
 }
 
@@ -640,3 +709,9 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+window.loadSampleDocument = loadSampleDocument;
+window.setQuickPrompt = setQuickPrompt;
+window.switchPreviewTab = switchPreviewTab;
+window.switchVersion = switchVersion;
+
