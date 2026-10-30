@@ -71,4 +71,13 @@ async def check_feasibility(resolved: Resolved, instruction: str, tgt_lang: str,
         return Feasibility(True, "ok", "", "", "rules")
     feasible = bool(data["feasible"])
     cat = data.get("category") if data.get("category") in CATEGORIES else ("ok" if feasible else "out_of_scope")
+
+    # Option 2 Soft-Gate:
+    # If the triage LLM rejected due to "layout", but the selection contains editable text nodes
+    # (paragraphs, list items, headings) with no locked content, allow the edit to proceed.
+    # The downstream HarfBuzz LayoutEngine dynamically scales fonts and wraps text, and
+    # VisualQAValidator verifies that the result actually fits within the bounding box.
+    if not feasible and cat == "layout" and resolved.nodes and not resolved.locked:
+        return Feasibility(True, "ok", "", "", "soft_layout_gate")
+
     return Feasibility(feasible, cat, str(data.get("reason", "")), str(data.get("suggestion", "")), "llm")
