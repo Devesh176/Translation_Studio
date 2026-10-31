@@ -150,7 +150,7 @@
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "title": "Provider Failures",
       "type": "timeseries",
-      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(translation_provider_failures_total[5m])) by (provider, failure_code)", "legendFormat": "{{provider}} / {{failure_code}}", "refId": "A"}]
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "(sum(rate(translation_provider_failures_total[5m])) by (provider, failure_code)) or vector(0)", "legendFormat": "{{provider}} / {{failure_code}}", "refId": "A"}]
     },
     {
       "collapsed": false,
@@ -188,8 +188,8 @@
       "title": "OCR Failures & Retries",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(ocr_provider_failures_total[5m])) by (provider)", "legendFormat": "failures {{provider}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(ocr_retry_total[5m])) by (provider)", "legendFormat": "retries {{provider}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "(sum(rate(ocr_provider_failures_total[5m])) by (provider)) or vector(0)", "legendFormat": "failures {{provider}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "(sum(rate(ocr_retry_total[5m])) by (provider)) or vector(0)", "legendFormat": "retries {{provider}}", "refId": "B"}
       ]
     },
     {
@@ -218,9 +218,9 @@
       "title": "Layout Issues",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(layout_overflow_total[5m])", "legendFormat": "overflow", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(layout_overlap_total[5m])", "legendFormat": "overlap", "refId": "B"},
-        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(font_missing_glyph_total[5m])) by (script)", "legendFormat": "missing glyph {{script}}", "refId": "C"}
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(layout_overflow_total[5m]) or vector(0)", "legendFormat": "overflow", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(layout_overlap_total[5m]) or vector(0)", "legendFormat": "overlap", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "(sum(rate(font_missing_glyph_total[5m])) by (script)) or vector(0)", "legendFormat": "missing glyph {{script}}", "refId": "C"}
       ]
     },
     {
@@ -248,7 +248,7 @@
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "title": "Validation Failures by Check Type",
       "type": "timeseries",
-      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(validation_failures_total[5m])) by (check_type)", "legendFormat": "{{check_type}}", "refId": "A"}]
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "(sum(rate(validation_failures_total[5m])) by (check_type)) or vector(0)", "legendFormat": "{{check_type}}", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},

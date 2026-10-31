@@ -386,17 +386,33 @@ class PyMuPDFParser:
             page_node.nodes = merge_display_math(page_node.nodes, page_node)
             pages.append(page_node)
 
+        has_large_scanned_image = False
+        for page in doc:
+            if len(page.get_images()) > 0:
+                for img in page.get_images():
+                    for img_r in page.get_image_rects(img[0]):
+                        if img_r.width * img_r.height > 0.20 * (page.rect.width * page.rect.height):
+                            has_large_scanned_image = True
+                            break
+
         doc.close()
 
         combined_sample = " ".join(all_text_accum[:10])
         script, conf = detect_unicode_script(combined_sample)
         detected_lang = infer_language_from_script(script)
 
+        if len(all_text_accum) == 0:
+            classification = "SCANNED"
+        elif has_large_scanned_image:
+            classification = "MIXED"
+        else:
+            classification = "DIGITAL"
+
         return DocumentIR(
             document_id=doc_id,
             version_id=str(uuid.uuid4()),
             total_pages=total_pages,
-            classification="DIGITAL" if len(all_text_accum) > 0 else "SCANNED",
+            classification=classification,
             source_language=detected_lang,
             pages=pages,
             metadata={"script": script, "script_confidence": conf},

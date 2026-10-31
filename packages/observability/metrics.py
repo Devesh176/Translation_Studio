@@ -255,3 +255,30 @@ ROUTING_DECISIONS_TOTAL = Counter(
     "Total translation routing decisions.",
     ["provider", "reason"],
 )
+
+
+def init_metrics():
+    if not _PROMETHEUS_AVAILABLE:
+        return
+    try:
+        for prov in ("bodhan", "openrouter"):
+            TRANSLATION_COST_USD_TOTAL.labels(provider=prov)
+            TRANSLATION_LATENCY_SECONDS.labels(provider=prov)
+            TRANSLATION_INPUT_TOKENS_TOTAL.labels(provider=prov)
+            TRANSLATION_OUTPUT_TOKENS_TOTAL.labels(provider=prov)
+            TRANSLATION_RETRIES_TOTAL.labels(provider=prov)
+            for st in ("success", "failed"):
+                TRANSLATION_REQUESTS_TOTAL.labels(provider=prov, source_language="en", target_language="hi", status=st)
+        for st in ("success", "error"):
+            OCR_PAGES_TOTAL.labels(provider="bodhan", status=st)
+        OCR_LATENCY_SECONDS.labels(provider="bodhan")
+        for st in ("SUCCESS", "FAILED"):
+            DOCUMENTS_PROCESSED_TOTAL.labels(status=st)
+            PIPELINE_DURATION_SECONDS.labels(status=st)
+        for st in ("success", "failed"):
+            RENDER_PAGES_TOTAL.labels(status=st)
+    except Exception:
+        pass
+
+
+init_metrics()

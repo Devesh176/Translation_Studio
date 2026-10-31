@@ -123,12 +123,21 @@ class PDFRenderer:
                 math_imgs = self._clip_math(doc[idx], page_node, archive)
             if src is not None and idx < len(doc):
                 page = doc[idx]
-                self._clear_source_text(page, page_node.nodes, is_overlay_mode)
+                has_bg_image = False
+                if len(page.get_images()) > 0:
+                    for img in page.get_images():
+                        for img_r in page.get_image_rects(img[0]):
+                            if img_r.width * img_r.height > 0.20 * (page.rect.width * page.rect.height):
+                                has_bg_image = True
+                                break
+                page_overlay = is_overlay_mode or has_bg_image
+                self._clear_source_text(page, page_node.nodes, page_overlay)
             else:
                 page = doc.new_page(pno=-1, width=page_node.width, height=page_node.height)
+                page_overlay = is_overlay_mode
 
             for node in page_node.nodes:
-                self._draw_node(page, page_node, node, css, archive, families, math_imgs.get(node.node_id))
+                self._draw_node(page, page_node, node, css, archive, families, math_imgs.get(node.node_id), is_overlay=page_overlay)
 
         try:
             doc.subset_fonts()
@@ -172,6 +181,56 @@ class PDFRenderer:
         return res
 
     def _clear_source_text(self, page, nodes: List[DocumentNode], overlay: bool) -> None:
+        if overlay:
+            rects: List[pymupdf.Rect] = []
+            for node in nodes:
+                is_member = (node.metadata.get("stu") or {}).get("role") == "member"
+                if not (node.translated_text or "").strip() and not is_member:
+                    continue
+                if node.metadata.get("math_only"):
+                    continue
+                if node.translated_text == node.source_text and node.type == NodeType.CODE_BLOCK:
+                    continue
+                r = self._text_rect(node)
+                pad_l = 2.0 if not node.metadata.get("marker_bbox") else 0.0
+                r = pymupdf.Rect(max(0.0, r.x0 - pad_l), max(0.0, r.y0 - 2.0), r.x1 + 2.0, r.y1 + 2.0)
+                rects.append(r)
+                mb = node.metadata.get("marker_bbox")
+                if mb and node.bbox.y1 > mb[3] + 2.0:
+                    below = pymupdf.Rect(max(0.0, node.bbox.x0 - 2.0), mb[3] - 1.0, r.x0, node.bbox.y1 + 2.0)
+                    rects.append(below)
+
+            # Spatial merge adjacent text rects in the same column to bridge OCR synthetic line gaps
+            changed = True
+            merged = list(rects)
+            while changed:
+                changed = False
+                new_merged = []
+                used = set()
+                for i in range(len(merged)):
+                    if i in used:
+                        continue
+                    curr = merged[i]
+                    for j in range(i + 1, len(merged)):
+                        if j in used:
+                            continue
+                        other = merged[j]
+                        x_overlap = min(curr.x1, other.x1) - max(curr.x0, other.x0)
+                        min_w = min(curr.width, other.width)
+                        if min_w > 0 and (x_overlap / min_w) > 0.4:
+                            top, bottom = (curr, other) if curr.y0 <= other.y0 else (other, curr)
+                            if 0 <= (bottom.y0 - top.y1) <= 14.0 or top.intersects(bottom):
+                                curr = pymupdf.Rect(min(curr.x0, other.x0), min(curr.y0, other.y0), max(curr.x1, other.x1), max(curr.y1, other.y1))
+                                used.add(j)
+                                changed = True
+                    new_merged.append(curr)
+                    used.add(i)
+                merged = new_merged
+
+            for m in merged:
+                page.draw_rect(m, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+            return
+
         for node in nodes:
             is_member = (node.metadata.get("stu") or {}).get("role") == "member"
             if not (node.translated_text or "").strip() and not is_member:
@@ -187,18 +246,11 @@ class PDFRenderer:
             if mb and node.bbox.y1 > mb[3] + 2.0:
                 # wrapped source lines below the marker line sit left of the text rect
                 below = pymupdf.Rect(node.bbox.x0 - 0.5, mb[3] - 1.0, r.x0, node.bbox.y1 + 0.5)
-                if overlay:
-                    page.draw_rect(below, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-                else:
-                    page.add_redact_annot(below, fill=False)
-            if overlay:
-                page.draw_rect(r, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-            else:
-                page.add_redact_annot(r, fill=False)
-        if not overlay:
-            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
-                                  graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-                                  text=0)
+                page.add_redact_annot(below, fill=False)
+            page.add_redact_annot(r, fill=False)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                              graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                              text=0)
 
     def _available_rect(self, page_node, node: DocumentNode) -> pymupdf.Rect:
         tr = self._text_rect(node)
@@ -213,7 +265,7 @@ class PDFRenderer:
                 y1_limit = min(y1_limit, other.bbox.y0 - 1.0)
         return pymupdf.Rect(tr.x0, tr.y0, x1, max(tr.y1, y1_limit))
 
-    def _draw_node(self, page, page_node, node: DocumentNode, css: str, archive, families: str, math_imgs=None) -> None:
+    def _draw_node(self, page, page_node, node: DocumentNode, css: str, archive, families: str, math_imgs=None, is_overlay: bool = False) -> None:
         if (node.metadata.get("stu") or {}).get("role") == "member":
             return
         text = node.translated_text or node.source_text
@@ -247,8 +299,9 @@ class PDFRenderer:
         is_code = node.type == NodeType.CODE_BLOCK
         fam = "font-family:mono, scr, lat;white-space:pre-wrap;" if is_code else ""
         align = "center" if centered else "left"
+        bg = "background-color:#ffffff;" if is_overlay else ""
         html_text = (f'<div style="font-size:{size}pt;font-weight:{weight};font-style:{italic};color:{color};'
-                     f'line-height:{line_h};text-align:{align};{fam}">{body}</div>')
+                     f'line-height:{line_h};text-align:{align};{fam}{bg}">{body}</div>')
 
         scratch = pymupdf.open()
         probe_page = scratch.new_page(width=page_node.width, height=page_node.height)
