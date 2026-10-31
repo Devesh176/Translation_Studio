@@ -11,14 +11,16 @@ Translation Studio accepts PDF documents, parses them into a high-fidelity **Doc
 | Feature | Description |
 |---|---|
 | **Structure-Preserving** | Headings, paragraphs, multi-column layouts, tables, footnotes, and links remain intact with bounding-box accuracy. |
+| **Scanned De-Ghosting** | Contiguous white masking with spatial bounding-box merging prevents original text bleed-through in scanned and searchable PDFs without altering figures or drawings. |
 | **Indic Script CTL** | True ligature, conjunct (*yuktakshar*), and vowel-sign (*matra*) shaping via Google Noto fonts + HarfBuzz. |
-| **Deterministic Routing** | Config-driven provider routing with automatic circuit-breaker fallback (Bodhan → OpenRouter). |
+| **Deterministic Routing** | Config-driven provider routing with automatic circuit-breaker fallback (Bodhan → OpenRouter). Primary focus on English to Indic pairs. |
 | **Script-Aware Cost Guard** | Pre-flight budget enforcement with per-script token multipliers (Devanagari ×2.5, Tamil/Telugu/Kannada/Malayalam ×3.0). |
 | **Semantic Translation Units** | Adjacent paragraph nodes grouped before LLM dispatch to eliminate mid-sentence layout breaks. |
 | **Protected Content** | CLI commands, URLs, file paths, product names masked with placeholder tokens before LLM; verified and restored after. |
-| **Prompt-Edit Sections** | Refine individual nodes or bounding-box selections with natural language prompts without re-running the full pipeline. |
+| **Prompt-Edit & Soft-Gate** | Refine nodes or bounding-box selections with natural language prompts. Soft-gate permits in-text formatting (bullets, line breaks) with downstream HarfBuzz dynamic scaling. |
+| **Interactive Web Studio** | Dark/Light theme switching, live pipeline progress stepper, language swap button, and real-time cost indicator breakdown. |
 | **Visual QA** | Post-render boundary containment, glyph, and sentinel-leak validation with a composite score (target ≥ 0.80). |
-| **Full Observability** | Structured JSON logs, distributed traces (OTel → Tempo), Prometheus metrics, Sentry exceptions — all correlated via `trace_id`. |
+| **Full Observability** | Structured JSON logs, distributed traces (OTel → Tempo), Prometheus metrics with startup pre-seeding and zero-failure fallbacks, Sentry exceptions — all correlated via `trace_id`. |
 | **Zero-Dependency Local Stack** | SQLite fallback, in-memory cache, local file store — runs without any cloud services. |
 
 ---
@@ -29,7 +31,7 @@ Translation Studio accepts PDF documents, parses them into a high-fidelity **Doc
 [PDF Upload]
      │
      ▼
-[PDF Classifier]  ──►  DIGITAL / SCANNED / MIXED
+[PDF Classifier]  ──►  DIGITAL / SCANNED / MIXED (Large image check >20% area)
      │
      ▼
 [PyMuPDF Parser]  ──►  Document IR (pages × nodes × bboxes × styles)
@@ -44,14 +46,14 @@ Translation Studio accepts PDF documents, parses them into a high-fidelity **Doc
      │
      ├── [Translation Router]  routing.yaml → Bodhan or OpenRouter
      │         │
-     │         ├── [Bodhan MT]      Indic language pairs
+     │         ├── [Bodhan MT]      Indic language pairs (en → Indic)
      │         └── [OpenRouter LLM] General / fallback
      │
      ├── [Invariant QA]  numbers, URLs, email preservation
      │
      ├── [Semantic QA]   length anomaly, untranslated text, repetition
      │
-     ├── [PDF Renderer]  HarfBuzz CTL → translated PDF
+     ├── [PDF Renderer]  HarfBuzz CTL + Spatial Text Masking → translated PDF
      │
      └── [Visual QA]     boundary containment + glyph verification
 ```
@@ -60,11 +62,13 @@ Translation Studio accepts PDF documents, parses them into a high-fidelity **Doc
 
 ## Supported Language Pairs
 
-| Source | Targets | Provider |
-|---|---|---|
-| English (`en`) | Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi | Bodhan AI |
-| Hindi, Tamil, Telugu (`hi`, `ta`, `te`) | English | Bodhan AI |
-| Any other pair | Any | OpenRouter (meta-llama/llama-3.3-70b) |
+| Source | Targets | Provider | Notes |
+|---|---|---|---|
+| English (`en`) | Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi | Bodhan AI | **Primary production pipeline** |
+| Indic (`hi`, `ta`, `te`, …) | English | OpenRouter / Bodhan | General LLM fallback |
+| Any other pair | Any | OpenRouter (meta-llama/llama-3.3-70b) | Multilingual fallback |
+
+> **Production Language Direction:** The high-fidelity production flow focuses on English to Indic language pairs. Indic-to-English translation uses general LLM fallback.
 
 ---
 
@@ -177,11 +181,29 @@ SQLite is used automatically when PostgreSQL is unavailable. Redis falls back to
 **Edit request body:**
 ```json
 {
-  "instruction": "Make this paragraph more formal and concise"
+  "instruction": "Convert this paragraph into bullet points with simplified terminology"
 }
 ```
 
 Returns a new `version_id` and the `edited_translation`.
+
+> **Smart Feasibility & Soft-Gate:** In-text structural adjustments (bullet points `•`, numbered lists, line breaks, simplification, and re-translation) are fully supported as valid text rewrites. An automated triage soft-gate permits structural formatting changes within selected text blocks, and downstream HarfBuzz `LayoutEngine` dynamically fits and wraps the modified text.
+
+---
+
+## Web Studio Interface (`apps/web/`)
+
+Translation Studio includes a modern, responsive web application for interacting with the platform visually.
+
+### Features
+- **Theme Switching:** Dark and Light mode toggling with instant icon adaptation and persistent `localStorage` preference (`ts_theme`).
+- **Language Switcher & Swap:** Dropdown language selectors with an instant language swap button (`btnSwapLang`) to quickly reverse translation direction.
+- **Pipeline Progress Stepper:** Live animated multi-stage stepper (`pipeline-stepper`) displaying real-time progress across Parsing, Translation, Font Shaping, and Visual QA.
+- **Cost Inspector:** Floating real-time cost indicator displaying cumulative document spend in USD, with an interactive tooltip showing detailed breakdown between translation and prompt-edit costs.
+- **Side-by-Side Document Viewer:** Compare translated output directly against the original PDF with synchronised scrolling and visual bounding box drawing for section edits.
+- **Quick Prompts:** One-click prompt chips (e.g., "Make more formal", "Convert to bullet points", "Fix spelling") for rapid revision.
+
+To open the web studio locally, open `apps/web/index.html` in any modern web browser or navigate to `http://localhost:8000` when the static mount is enabled.
 
 ---
 
@@ -304,15 +326,20 @@ Every trace span, log record, and metric is correlated via `trace_id` — click 
 
 ### Grafana Dashboard
 
-The **Translation Studio — Overview** dashboard is auto-provisioned at startup and contains five sections:
+The **Translation Studio — Overview** dashboard is auto-provisioned at startup (`http://localhost:3000/d/ts-overview/translation-studio-e28094-overview`) and contains five sections:
 
 | Section | Key Panels |
 |---|---|
 | HTTP / API | Request rate, error rate (5xx), p50/p95/p99 latency, active jobs |
-| Translation Providers | Requests/s by provider & status, p95 latency, cumulative cost (USD), cache hit rate |
-| OCR | Pages/s by status, p95 latency, failures |
-| Rendering & Visual QA | Render latency, layout overflow events, QA score gauge |
+| Translation Providers | Requests/s by provider & status, p95 latency, cumulative cost (USD), cache hit rate, provider failures |
+| OCR | Pages/s by status, p95 latency, OCR provider failures & retries |
+| Rendering & Visual QA | Render latency, layout overflow/overlap, missing glyphs, QA score gauge |
 | Validation | Failures by check type, pipeline duration p50/p95 |
+
+#### Dashboard Reliability Features
+- **Metric Pre-seeding (`init_metrics()`):** Counters and histograms with provider labels are initialized at container startup, ensuring Prometheus exports clean zero baselines even before the first document is submitted.
+- **Zero-Failure Fallbacks (`or vector(0)`):** Panels monitoring failure rates and layout anomalies include PromQL fallbacks to render a flat `0` line rather than an empty `"No data"` state when zero errors exist.
+- **Relative Live Tracking:** When monitoring live jobs, select a relative time range (e.g. **Last 15 minutes** / `from=now-15m&to=now`) with auto-refresh (`refresh=30s`) so the time window continuously advances with live traffic.
 
 ### Structured Logging
 

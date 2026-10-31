@@ -107,7 +107,11 @@ Stage 7 — Store Artefacts (IR JSON + PDF → object store, cost ledger)
 
 ### 5.3 PDF Parser (`packages/document/parser`)
 
-Uses **PyMuPDF** to extract text blocks with per-span bounding boxes, fonts, sizes, colours, reading order, rotation; math regions (CMR/STIX/LMMATH fonts); table cell grids; and footnotes. `PDFClassifier` labels documents as `DIGITAL`, `SCANNED`, or `MIXED`.
+Uses **PyMuPDF** to extract text blocks with per-span bounding boxes, fonts, sizes, colours, reading order, rotation; math regions (CMR/STIX/LMMATH fonts); table cell grids; and footnotes. Key parsing features include:
+- **Searchable Scanned PDF Detection:** In addition to text length, the parser inspects embedded images. If any image occupies > 20% of the page area, the page is recognized as containing scanned content, ensuring searchable scanned PDFs (scanned pages with an invisible OCR text layer) are classified as `MIXED` or `SCANNED` rather than purely digital.
+- **Dynamic Typography Profiling:** Computes character-weighted body font size (`_body_size`) and dynamic, scale-independent heading thresholds (`max(12.5, doc_body * 1.15)`).
+- **Spatial Alignment & Centering:** Evaluates horizontal alignment (`_aligned`) and center symmetry (`_same_center`) to bridge multi-line paragraphs across extraction blocks and flag centered headers/titles (`centered = True`).
+- **Proportional Margins:** Header/footer bounds are dynamically computed based on page height (top 6% for headers, bottom 6% for footers) instead of fixed point offsets.
 
 ### 5.4 Document Intermediate Representation (IR)
 
@@ -122,7 +126,7 @@ DocumentIR
               ├── TextSpan[]  (sub-span rich text)
               ├── source_text / translated_text
               ├── translation_status / validation_status
-              └── metadata    (math_regions, stu, protected_tokens, …)
+              └── metadata    (math_regions, stu, protected_tokens, centered, …)
 ```
 
 ### 5.5 Semantic Translation Units (STU)
@@ -143,10 +147,12 @@ Priority 2: Routing table match (source → target → provider)
 Priority 3: Default fallback (OpenRouter + meta-llama/llama-3.3-70b)
 ```
 
-| Provider | Pairs | API Type |
-|---|---|---|
-| **Bodhan** | en→{hi,ta,te,kn,ml,bn,mr,gu,pa}, {hi,ta,te}→en | Indic MT + OCR |
-| **OpenRouter** | All pairs (LLM fallback) | OpenAI-compatible chat |
+| Provider | Pairs | API Type | Notes |
+|---|---|---|---|
+| **Bodhan** | en→{hi,ta,te,kn,ml,bn,mr,gu,pa} | Indic MT + OCR | Primary high-performance Indic MT pipeline |
+| **OpenRouter** | All pairs | OpenAI-compatible chat | General multilingual LLM fallback |
+
+> **Production Language Direction:** The verified high-quality production flow focuses on English to Indic language pairs. Indic-to-English translation is routed through general LLM fallback when enabled.
 
 ### 5.8 Cost Guard (`packages/translation/cost_guard`)
 
@@ -158,9 +164,16 @@ Three-path renderer on PyMuPDF:
 
 | Mode | Trigger | Strategy |
 |---|---|---|
-| **Digital** | `DIGITAL` | Blank source text layers, re-flow translated text at exact coordinates |
-| **Overlay** | `SCANNED` | Stamp translated text over image page transparently |
-| **Mixed** | `MIXED` | Digital reflow on text pages, overlay on image pages |
+| **Digital** | `DIGITAL` | Apply redaction annotations to clear source text layers; re-flow translated text at exact coordinates |
+| **Overlay** | `SCANNED` or page image > 20% area | Contiguous spatial text masking over source text blocks; insert translated text story with white background |
+| **Mixed** | `MIXED` | Digital reflow on pure text pages, overlay with white masking on scanned/image pages |
+
+#### Overlay Mode & Scanned Document De-Ghosting
+In scanned documents and searchable PDFs, standard PDF text redactions only remove invisible text layers, leaving the rasterized source text visible behind the translated text. The renderer resolves this via:
+1. **Contiguous Text Masking:** Replaces redactions with opaque white rectangles (`color=(1, 1, 1), fill=(1, 1, 1), overlay=True`) directly over the detected source text boxes, leaving figures, stamps, and non-text visual elements untouched.
+2. **Spatial Box Merging:** Adjacent bounding boxes in the same column (vertical gap ≤ 14pt, horizontal overlap > 40%) are spatially merged prior to masking to bridge synthetic OCR line gaps.
+3. **Opaque Text Container:** Translated text HTML containers apply `background-color: #ffffff;` in overlay mode, ensuring zero raster bleed-through.
+4. **Centering Preservation:** Retains centered alignment and bounds for titles and headings flagged during parsing.
 
 `FontRegistry` selects Google Noto fonts per script. PyMuPDF HTML story renderer + HarfBuzz performs OpenType CTL shaping. `LayoutEngine` shrinks font up to 15% to fit translated text in source bounding box.
 
@@ -177,7 +190,11 @@ SHA-256 keyed on (source_text | src_lang | tgt_lang | provider | model | prompt_
 
 ### 5.12 Section & Selection Editing
 
-Users refine nodes or arbitrary selections via natural language prompts without re-running the full pipeline. Edit pipeline loads IR, locates node, dispatches refinement LLM call, validates output, saves a new version (parent→child version graph), and re-renders only affected pages.
+Users refine individual nodes or arbitrary rectangular/text selections via natural language prompts without re-running the full pipeline. The edit pipeline loads IR, locates selected nodes, checks feasibility, dispatches refinement LLM call, validates output, saves a new version (parent→child version graph), and re-renders only affected pages.
+
+#### Edit Feasibility & Soft-Gate (`packages/editing/feasibility.py`)
+- **In-Text Formatting Support:** Prompts explicitly permit in-text structural adjustments (adding bullet points `•`, numbered lists, line breaks, rephrasing, simplification) as valid text rewrites (`feasible: true`, category `"ok"`).
+- **Option 2 Soft-Gate:** If the initial triage LLM flags `layout` because of bulleting or list formatting, but the selection contains valid editable text nodes (paragraphs, list items, headings) and no locked content (math, code, images), the gate overrides the rejection (`soft_layout_gate`). Downstream HarfBuzz `LayoutEngine` dynamically fits and wraps the text, and `VisualQAValidator` verifies bounding-box containment.
 
 ### 5.13 Observability Stack
 
@@ -188,7 +205,19 @@ Users refine nodes or arbitrary selections via natural language prompts without 
 | Metrics | prometheus-client | `/metrics` → Prometheus → Grafana |
 | Exceptions | Sentry SDK | Direct HTTPS → sentry.io |
 
-Every log record inside an active OTel span carries `trace_id` + `span_id` for one-click Grafana → Tempo correlation.
+- **Metric Pre-seeding (`init_metrics()`):** Base metric series (`translation_requests_total`, `translation_cost_usd_total`, `ocr_pages_total`, etc.) are pre-initialized with default provider dimensions at startup, preventing missing series in Prometheus on fresh containers.
+- **Zero-Failure PromQL Handling:** Failure and event panels in Grafana employ PromQL `or vector(0)` fallbacks to plot `0` rather than displaying `"No data"` when zero errors occur.
+- **Relative Time Tracking:** Dashboards use relative time ranges (`from=now-15m&to=now` or `from=now-3h&to=now`) to continuously display live telemetry.
+- **Trace-Log Correlation:** Every log record inside an active OTel span carries `trace_id` + `span_id` for one-click Grafana → Tempo correlation.
+
+### 5.14 Web Studio Interface (`apps/web`)
+
+Modern interactive web frontend providing:
+- **Theme Toggle:** Dark and Light mode switching with local storage persistence (`ts_theme`).
+- **Language Controls:** Source and target language selection with instant language swap button (`btnSwapLang`).
+- **Interactive Stepper:** Live animated pipeline progress stepper (`pipeline-stepper`) showing active translation stages.
+- **Cost Inspector:** Real-time cost indicator with tooltip breakdown for translation and prompt-edit spend in USD.
+- **Selection Tools & History:** Side-by-side translated vs original preview, visual bounding box selection, quick prompt chips, and version history DAG navigation.
 
 ---
 
